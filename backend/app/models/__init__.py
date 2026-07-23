@@ -1,0 +1,25 @@
+from app.models.candidate import Candidate, CandidateStatus, ParsingStatus
+from app.models.interview import Interview, InterviewStatus, InterviewType
+from app.models.job import (
+    Application,
+    ApplicationStatus,
+    EmploymentType,
+    Job,
+    JobStatus,
+    SeniorityLevel,
+)
+
+__all__ = [
+    "Candidate",
+    "CandidateStatus",
+    "ParsingStatus",
+    "Job",
+    "JobStatus",
+    "EmploymentType",
+    "SeniorityLevel",
+    "Application",
+    "ApplicationStatus",
+    "Interview",
+    "InterviewType",
+    "InterviewStatus",
+]
