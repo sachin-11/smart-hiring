@@ -2,11 +2,14 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.resume_parser import ResumeParserAgent
 from app.core.database import get_db, get_db_context
 from app.models.candidate import Candidate, ParsingStatus
+from app.models.interview import Interview
+from app.models.job import Application
 from app.schemas.resume import ResumeDetailResponse, ResumeStatusResponse, ResumeUploadResponse
 from app.services import embedding_service, s3_service
 
@@ -78,6 +81,33 @@ async def get_resume(candidate_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return ResumeDetailResponse.model_validate(candidate)
 
 
+async def _reconcile_existing_email(session: AsyncSession, new_candidate_id: uuid.UUID, email: str) -> None:
+    """A resume re-upload creates a fresh candidate row before parsing knows
+    the email, so a second upload from the same person collides with their
+    existing row on the unique email constraint. Treat it as a refresh:
+    re-point any applications/interviews to the new row and drop the stale one.
+    """
+    stmt = select(Candidate).where(Candidate.email == email, Candidate.id != new_candidate_id)
+    existing = (await session.execute(stmt)).scalar_one_or_none()
+    if existing is None:
+        return
+
+    logger.info(
+        "Resume re-upload for %s: merging into candidate %s, removing old row %s",
+        email,
+        new_candidate_id,
+        existing.id,
+    )
+    await session.execute(
+        update(Application).where(Application.candidate_id == existing.id).values(candidate_id=new_candidate_id)
+    )
+    await session.execute(
+        update(Interview).where(Interview.candidate_id == existing.id).values(candidate_id=new_candidate_id)
+    )
+    await session.delete(existing)
+    await session.flush()
+
+
 async def _process_resume(candidate_id: uuid.UUID, contents: bytes, filename: str) -> None:
     """Background task: uploads to S3, parses the resume, generates + stores its embedding.
 
@@ -97,6 +127,9 @@ async def _process_resume(candidate_id: uuid.UUID, contents: bytes, filename: st
             s3_key, object_url = await s3_service.upload_resume_file(candidate_id, filename, contents)
             agent = get_parser_agent()
             raw_text, parsed = await agent.parse(contents, filename)
+
+            if parsed.email:
+                await _reconcile_existing_email(session, candidate_id, parsed.email)
 
             candidate.s3_key = s3_key
             candidate.resume_url = object_url

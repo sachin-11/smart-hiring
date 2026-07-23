@@ -8,6 +8,9 @@ from app.models.job import (
     JobStatus,
     SeniorityLevel,
 )
+from app.models.mlops import DriftReport, RagEvalLog
+from app.models.recruiter import Recruiter
+from app.models.report import Report
 
 __all__ = [
     "Candidate",
@@ -22,4 +25,8 @@ __all__ = [
     "Interview",
     "InterviewType",
     "InterviewStatus",
+    "Report",
+    "RagEvalLog",
+    "DriftReport",
+    "Recruiter",
 ]

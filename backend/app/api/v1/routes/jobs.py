@@ -2,12 +2,13 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.jd_analyzer import JDAnalyzerAgent
 from app.core.database import get_db
-from app.models.job import Job, JobStatus
-from app.schemas.job import JobCreateRequest, JobDetailResponse
+from app.models.job import Application, Job, JobStatus
+from app.schemas.job import JobCreateRequest, JobDetailResponse, JobListItem, JobListResponse
 from app.services import embedding_service
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,35 @@ async def create_job(payload: JobCreateRequest, db: AsyncSession = Depends(get_d
         job = await db.get(Job, job.id)
 
     return JobDetailResponse.model_validate(job)
+
+
+@router.get("", response_model=JobListResponse)
+async def list_jobs(db: AsyncSession = Depends(get_db)) -> JobListResponse:
+    stmt = (
+        select(
+            Job,
+            func.count(Application.id).label("applicant_count"),
+            func.max(Application.match_score).label("top_match_score"),
+        )
+        .outerjoin(Application, Application.job_id == Job.id)
+        .group_by(Job.id)
+        .order_by(Job.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    jobs = [
+        JobListItem(
+            id=job.id,
+            title=job.title,
+            department=job.department,
+            location=job.location,
+            status=job.status,
+            applicant_count=applicant_count,
+            top_match_score=top_match_score,
+            created_at=job.created_at,
+        )
+        for job, applicant_count, top_match_score in rows
+    ]
+    return JobListResponse(jobs=jobs)
 
 
 @router.get("/{job_id}", response_model=JobDetailResponse)

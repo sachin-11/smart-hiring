@@ -1,0 +1,32 @@
+{
+  "family": "smart-hiring-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "<REPLACED_BY_CI>",
+      "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+      "essential": true,
+      "environment": [{ "name": "APP_ENV", "value": "production" }],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/database-url" },
+        { "name": "REDIS_URL", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/redis-url" },
+        { "name": "JWT_SECRET_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/jwt-secret" },
+        { "name": "OPENAI_API_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/openai-key" },
+        { "name": "GROQ_API_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/groq-key" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/smart-hiring-backend",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "backend"
+        }
+      }
+    }
+  ]
+}

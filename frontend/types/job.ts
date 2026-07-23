@@ -26,3 +26,18 @@ export interface JobDetailResponse {
   status: JobStatus
   created_at: string
 }
+
+export interface JobListItem {
+  id: string
+  title: string
+  department: string | null
+  location: string | null
+  status: JobStatus
+  applicant_count: number
+  top_match_score: number | null
+  created_at: string
+}
+
+export interface JobListResponse {
+  jobs: JobListItem[]
+}

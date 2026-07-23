@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { extractErrorMessage } from "@/lib/errors"
 import type { JobCreateRequest, JobDetailResponse } from "@/types/job"
 
 export default function NewJobPage() {
@@ -44,10 +45,7 @@ export default function NewJobPage() {
       // Matching is auto-triggered by the matches page itself on load.
       router.push(`/jobs/${job.id}/matches`)
     } catch (err) {
-      const message =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-        "Failed to create job. Please try again."
-      setError(message)
+      setError(extractErrorMessage(err, "Failed to create job. Please try again."))
       setSubmitting(false)
     }
   }

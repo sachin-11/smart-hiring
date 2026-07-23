@@ -6,6 +6,7 @@ import { useDropzone } from "react-dropzone"
 import ResumeCard from "@/components/ResumeCard"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
+import { extractErrorMessage } from "@/lib/errors"
 import type { ResumeDetailResponse, ResumeStatusResponse, ResumeUploadResponse } from "@/types/resume"
 
 type Stage = "idle" | "uploading" | "processing" | "completed" | "failed"
@@ -95,10 +96,7 @@ export default function UploadPage() {
         pollAttemptsRef.current = 0
         pollStatus(data.candidate_id)
       } catch (err) {
-        const message =
-          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-          "Upload failed. Please try again."
-        setErrorMessage(message)
+        setErrorMessage(extractErrorMessage(err, "Upload failed. Please try again."))
         setStage("failed")
       }
     },

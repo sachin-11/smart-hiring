@@ -11,6 +11,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import close_db, engine, init_db
 from app.core.redis_client import check_redis_connection, close_redis_pool
+from app.services.monitoring import PrometheusMiddleware, get_metrics_response
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -46,8 +47,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(PrometheusMiddleware)
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+
+@app.get("/metrics", tags=["monitoring"])
+async def metrics():
+    return get_metrics_response()
 
 
 @app.exception_handler(Exception)

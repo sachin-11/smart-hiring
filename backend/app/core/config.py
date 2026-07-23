@@ -33,6 +33,25 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     AWS_S3_BUCKET: str = ""
 
+    # SendGrid (report sharing)
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_FROM_EMAIL: str = "reports@smart-hiring.example"
+
+    # MLOps
+    # mlflow>=3 puts the filesystem backend ("file:./mlruns") in maintenance mode by
+    # default and refuses to write to it; sqlite is the modern default (also queryable
+    # via mlflow.search_runs(), which the analytics dashboard needs).
+    MLFLOW_TRACKING_URI: str = "sqlite:///mlflow.db"
+
+    # Auth
+    JWT_SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_TTL_MINUTES: int = 30
+    JWT_REFRESH_TOKEN_TTL_DAYS: int = 7
+
+    # Notifications
+    SLACK_WEBHOOK_URL: str = ""
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000"
 

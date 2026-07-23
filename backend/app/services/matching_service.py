@@ -10,6 +10,7 @@ from rank_bm25 import BM25Okapi
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import cache_service
 from app.core.config import settings
 from app.models.candidate import Candidate, ParsingStatus
 from app.models.job import Job
@@ -126,6 +127,22 @@ async def _cross_encoder_rerank(jd_text: str, candidates: list[Candidate]) -> li
     return await asyncio.to_thread(_cross_encoder_rerank_sync, jd_text, candidates)
 
 
+def _score_single_pair_sync(jd_text: str, resume_text: str) -> float:
+    model = _get_cross_encoder()
+    raw_score = model.predict([(jd_text, resume_text)])[0]
+    return 1 / (1 + math.exp(-float(raw_score)))
+
+
+async def score_single_pair(jd_text: str, resume_text: str) -> float:
+    """Cross-encoder relevance score (0-1) for one specific JD/resume pair.
+
+    Used by the orchestrator pipeline (Module 4), which already knows which
+    candidate it's evaluating and doesn't need the full hybrid search over
+    the whole candidate pool.
+    """
+    return await asyncio.to_thread(_score_single_pair_sync, jd_text, resume_text)
+
+
 # --- LLM-generated match explanations --------------------------------------------
 
 
@@ -203,8 +220,16 @@ async def match_job_to_candidates(session: AsyncSession, job: Job, top_k: int = 
     if job.description_embedding is None:
         raise ValueError("Job has no description embedding yet; it hasn't been analyzed")
 
+    # Cache-aside for the JD embedding: cheap here since `job` is already loaded,
+    # but this is the read path any future caller that only has a job_id (not a
+    # loaded Job row) should go through instead of re-querying Postgres.
+    async def _load_embedding() -> list[float]:
+        return job.description_embedding
+
+    jd_embedding = await cache_service.get_or_set_jd_embedding(job.id, _load_embedding)
+
     dense_results, pool = await asyncio.gather(
-        _dense_search(session, job.description_embedding, limit=DENSE_TOP_K),
+        _dense_search(session, jd_embedding, limit=DENSE_TOP_K),
         _fetch_candidate_pool(session),
     )
     sparse_results = await _sparse_search(pool, job.description, limit=SPARSE_TOP_K)

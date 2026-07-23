@@ -1,0 +1,30 @@
+{
+  "family": "smart-hiring-frontend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "frontend",
+      "image": "<REPLACED_BY_CI>",
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp" }],
+      "essential": true,
+      "environment": [
+        { "name": "NEXT_PUBLIC_API_BASE_URL", "value": "https://api.smart-hiring.example/api/v1" }
+      ],
+      "secrets": [
+        { "name": "NEXTAUTH_SECRET", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:smart-hiring/nextauth-secret" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/smart-hiring-frontend",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "frontend"
+        }
+      }
+    }
+  ]
+}

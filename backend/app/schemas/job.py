@@ -47,3 +47,18 @@ class JobDetailResponse(BaseModel):
     seniority_level: SeniorityLevel | None = None
     status: JobStatus
     created_at: datetime
+
+
+class JobListItem(BaseModel):
+    id: uuid.UUID
+    title: str
+    department: str | None = None
+    location: str | None = None
+    status: JobStatus
+    applicant_count: int
+    top_match_score: float | None = None
+    created_at: datetime
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobListItem]

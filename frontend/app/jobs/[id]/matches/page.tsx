@@ -6,6 +6,7 @@ import { useParams } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { api } from "@/lib/api"
+import { extractErrorMessage } from "@/lib/errors"
 import type { JobDetailResponse } from "@/types/job"
 import type { MatchResponse, MatchResult } from "@/types/matching"
 
@@ -51,10 +52,7 @@ export default function JobMatchesPage() {
         setResults(matchData.results)
       } catch (err) {
         if (cancelled) return
-        const message =
-          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-          "Failed to compute matches."
-        setError(message)
+        setError(extractErrorMessage(err, "Failed to compute matches."))
       }
     }
 
