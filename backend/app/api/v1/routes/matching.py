@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cache_service
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
 from app.models.job import Job
 from app.schemas.matching import MatchRequest, MatchResponse, MatchResult
 from app.services import matching_service
@@ -12,7 +13,7 @@ from app.services.monitoring import match_score_distribution
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/match", tags=["matching"])
+router = APIRouter(prefix="/match", tags=["matching"], dependencies=[Depends(get_current_recruiter)])
 
 
 @router.post("", response_model=MatchResponse)

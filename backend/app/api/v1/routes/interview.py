@@ -1,12 +1,17 @@
+import asyncio
 import logging
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketState
 
 from app.agents import interview_agent
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
+from app.core.rate_limit import limiter
 from app.models.interview import Interview
 from app.schemas.interview import (
     InterviewAnswerResponse,
@@ -19,9 +24,12 @@ from app.services import s3_service, voice_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/interview", tags=["interview"])
+router = APIRouter(prefix="/interview", tags=["interview"], dependencies=[Depends(get_current_recruiter)])
 # Registered without the "/interview" prefix so the socket lives at the spec'd
 # /ws/interview/{session_id} path rather than /interview/ws/interview/{session_id}.
+# NOTE: unauthenticated — browsers can't attach an Authorization header to a
+# WebSocket handshake. It relies on session_id being an unguessable UUID; add
+# a query-param token check here if that's ever not a strong enough guarantee.
 ws_router = APIRouter(tags=["interview"])
 
 
@@ -42,7 +50,8 @@ async def _synthesize_and_upload(session_id: uuid.UUID, text: str) -> str | None
 
 
 @router.post("/start", response_model=InterviewStartResponse)
-async def start_interview(payload: InterviewStartRequest) -> InterviewStartResponse:
+@limiter.limit(settings.RATE_LIMIT_LLM_ENDPOINTS)
+async def start_interview(request: Request, payload: InterviewStartRequest) -> InterviewStartResponse:
     try:
         result = await interview_agent.start_interview(payload.candidate_id, payload.job_id)
     except ValueError as exc:
@@ -113,23 +122,66 @@ async def get_transcript(session_id: uuid.UUID, db: AsyncSession = Depends(get_d
     )
 
 
+async def _stream_question_audio(websocket: WebSocket, session_id: uuid.UUID, question: str) -> None:
+    """Synthesizes and sends the next question sentence-by-sentence instead of
+    as one clip — the candidate hears the first sentence while later ones are
+    still being generated, instead of silence for the whole response."""
+    chunks = voice_service.split_into_speech_chunks(question)
+    try:
+        await websocket.send_json({"type": "audio_start", "chunk_count": len(chunks)})
+        for chunk_text in chunks:
+            audio = await voice_service.synthesize_speech(chunk_text)
+            await websocket.send_bytes(audio)
+    except Exception:
+        logger.exception("TTS failed mid-stream for session=%s", session_id)
+    finally:
+        await websocket.send_json({"type": "audio_end"})
+
+
 @ws_router.websocket("/ws/interview/{session_id}")
 async def interview_voice_stream(websocket: WebSocket, session_id: uuid.UUID) -> None:
     """Real-time voice turn-taking: client streams raw PCM16LE mono 16kHz audio
     frames as binary WS messages; the server runs WebRTC VAD to detect when the
     candidate stops talking, transcribes the utterance, runs it through the
-    interview agent, and pushes back the next question as JSON + synthesized audio."""
+    interview agent, and pushes back the next question as JSON + synthesized audio.
+
+    Session state itself lives in Redis (see interview_agent), so a client that
+    loses this connection and opens a fresh one to the same session_id resumes
+    correctly — the reconnect logic lives entirely on the frontend."""
     await websocket.accept()
     vad = voice_service.VoiceActivityDetector()
 
+    # Idle handling: distinguishes "candidate is silently thinking" (frames still
+    # arriving, no speech yet) from genuine no-response, since audio frames keep
+    # streaming continuously while the mic is open regardless of whether the
+    # candidate is actually talking.
+    last_speech_at = time.monotonic()
+    nudged = False
+
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=settings.INTERVIEW_WS_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                idle_for = time.monotonic() - last_speech_at
+                if idle_for >= settings.INTERVIEW_WS_TIMEOUT_SECONDS:
+                    await websocket.send_json(
+                        {"type": "error", "detail": "We didn't hear a response — please try again."}
+                    )
+                    break
+                if idle_for >= settings.INTERVIEW_WS_NUDGE_SECONDS and not nudged:
+                    nudged = True
+                    await websocket.send_json({"type": "nudge"})
+                continue
+
             if message.get("type") == "websocket.disconnect":
                 break
 
             if (data := message.get("bytes")) is not None:
                 utterance_ready = vad.push(data)
+                if vad.has_heard_speech:
+                    last_speech_at = time.monotonic()
+                    nudged = False
                 if not utterance_ready:
                     continue
 
@@ -170,13 +222,11 @@ async def interview_voice_stream(websocket: WebSocket, session_id: uuid.UUID) ->
                 if result["complete"]:
                     break
 
+                last_speech_at = time.monotonic()
+                nudged = False
+
                 if result["question"]:
-                    try:
-                        audio = await voice_service.synthesize_speech(result["question"])
-                        await websocket.send_json({"type": "audio_start"})
-                        await websocket.send_bytes(audio)
-                    except Exception:
-                        logger.exception("TTS failed mid-stream for session=%s", session_id)
+                    await _stream_question_audio(websocket, session_id, result["question"])
 
             elif (text := message.get("text")) is not None:
                 # Control messages from the client (e.g. {"type": "ping"}) are accepted but ignored for now.

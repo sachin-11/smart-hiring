@@ -41,3 +41,5 @@ httpx==0.28.1
 # deprecated/unmaintained; its asyncio support was merged into redis-py itself years
 # ago. This app already uses `redis.asyncio` everywhere (see core/redis_client.py),
 # which is the modern equivalent the aioredis project itself recommends migrating to.
+apscheduler==3.11.3
+slowapi==0.1.10

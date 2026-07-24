@@ -5,10 +5,12 @@ import { useParams } from "next/navigation"
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Mail } from "lucide-react"
 import { Cell, Pie, PieChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, ResponsiveContainer } from "recharts"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { LoadingState } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { extractErrorMessage } from "@/lib/errors"
@@ -129,17 +131,21 @@ export default function ReportPage() {
 
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-4xl items-center justify-center p-8">
-        <p className="text-destructive">{error}</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-4xl items-center justify-center">
+          <p className="text-destructive">{error}</p>
+        </main>
+      </DashboardShell>
     )
   }
 
   if (!data) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-4xl items-center justify-center p-8">
-        <p className="text-muted-foreground">Loading report…</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-4xl items-center justify-center">
+          <LoadingState label="Loading report…" />
+        </main>
+      </DashboardShell>
     )
   }
 
@@ -155,7 +161,8 @@ export default function ReportPage() {
   }))
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 p-8 print:p-0">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-4xl flex-col gap-6 print:p-0">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">{data.candidate_name ?? "Candidate"} — Scorecard</h1>
@@ -297,5 +304,6 @@ export default function ReportPage() {
         </CardContent>
       </Card>
     </main>
+    </DashboardShell>
   )
 }

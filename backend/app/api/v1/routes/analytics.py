@@ -5,29 +5,31 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate, CandidateStatus
 from app.models.mlops import DriftReport, RagEvalLog
 from app.schemas.analytics import (
     AnalyticsDashboardResponse,
     DriftAlertItem,
     DriftRunResponse,
+    JudgeRunResponse,
     RagasAlertItem,
     RagasRunResponse,
     RagasTrendPoint,
 )
 from app.services import llm_router
-from app.services.mlops import drift_detector, experiment_tracker, ragas_evaluator
+from app.services.mlops import drift_detector, experiment_tracker, llm_judge_evaluator, ragas_evaluator
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["analytics"])
+router = APIRouter(tags=["analytics"], dependencies=[Depends(get_current_recruiter)])
 
 
 @router.post("/mlops/ragas/run", response_model=RagasRunResponse)
 async def trigger_ragas_run(sample_size: int = 5, db: AsyncSession = Depends(get_db)) -> RagasRunResponse:
-    """Manually triggers a RAGAS evaluation run. In production this is the same
-    function a weekly scheduler (cron / APScheduler / Celery beat — none of which
-    are currently part of this stack) would call; see MODULE_7_SETUP.md."""
+    """Manually triggers a RAGAS evaluation run — the same function
+    app.services.mlops.scheduler runs on a recurring background schedule when
+    MLOPS_SCHEDULE_ENABLED=true (see .env.example)."""
     try:
         summary = await ragas_evaluator.run_evaluation(db, sample_size=sample_size)
     except ValueError as exc:
@@ -53,6 +55,18 @@ async def trigger_drift_run(
         alert_triggered=report["alert_triggered"],
         psi_threshold=report["psi_threshold"],
     )
+
+
+@router.post("/mlops/judge/run", response_model=JudgeRunResponse)
+async def trigger_judge_run(sample_size: int = 5, db: AsyncSession = Depends(get_db)) -> JudgeRunResponse:
+    """Manually triggers an LLM-as-judge run: an independent, deliberately
+    stronger model blind-rescoring a sample of already-scored interview
+    answers, to catch scoring bias/drift in the live-interview scoring model."""
+    try:
+        summary = await llm_judge_evaluator.run_evaluation(db, sample_size=sample_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JudgeRunResponse(**{k: v for k, v in summary.items() if k != "rows"})
 
 
 @router.get("/analytics/dashboard", response_model=AnalyticsDashboardResponse)

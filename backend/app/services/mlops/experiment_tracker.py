@@ -22,6 +22,7 @@ EXPERIMENT_PIPELINE_RUNS = "hiring-pipeline-runs"
 EXPERIMENT_PROMPTS = "prompt-versions"
 EXPERIMENT_RAGAS = "ragas-evaluations"
 EXPERIMENT_DRIFT = "embedding-drift"
+EXPERIMENT_JUDGE = "answer-judge-evaluations"
 
 _configured = False
 
@@ -88,6 +89,20 @@ def _log_ragas_run_sync(run_id: str, metrics: dict[str, float], alert: bool) -> 
 
 async def log_ragas_run(run_id: uuid.UUID, metrics: dict[str, float], alert: bool) -> str:
     return await asyncio.to_thread(_log_ragas_run_sync, str(run_id), metrics, alert)
+
+
+def _log_judge_run_sync(run_id: str, metrics: dict[str, float], alert: bool) -> str:
+    _ensure_configured()
+    mlflow.set_experiment(EXPERIMENT_JUDGE)
+    with mlflow.start_run(run_name=f"judge-{run_id[:8]}") as run:
+        mlflow.set_tags({"eval_run_id": run_id, "alert_triggered": str(alert)})
+        for key, value in metrics.items():
+            mlflow.log_metric(key, value)
+        return run.info.run_id
+
+
+async def log_judge_run(run_id: uuid.UUID, metrics: dict[str, float], alert: bool) -> str:
+    return await asyncio.to_thread(_log_judge_run_sync, str(run_id), metrics, alert)
 
 
 def _log_drift_check_sync(psi_score: float, alert: bool, baseline_size: int, current_size: int) -> str:

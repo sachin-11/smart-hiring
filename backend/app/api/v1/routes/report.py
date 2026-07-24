@@ -1,12 +1,15 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import report_agent
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
+from app.core.rate_limit import limiter
 from app.models.candidate import Candidate
 from app.models.interview import Interview, InterviewStatus
 from app.models.job import Application, Job
@@ -23,7 +26,7 @@ from app.services import email_service, pdf_service, s3_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/report", tags=["report"])
+router = APIRouter(prefix="/report", tags=["report"], dependencies=[Depends(get_current_recruiter)])
 
 
 async def _latest_match_score(db: AsyncSession, candidate_id: uuid.UUID, job_id: uuid.UUID) -> float | None:
@@ -50,7 +53,10 @@ def _to_detail_response(report: Report, candidate_name: str | None, job_title: s
 
 
 @router.post("/generate", response_model=ReportDetailResponse)
-async def generate_report(payload: ReportGenerateRequest, db: AsyncSession = Depends(get_db)) -> ReportDetailResponse:
+@limiter.limit(settings.RATE_LIMIT_LLM_ENDPOINTS)
+async def generate_report(
+    request: Request, payload: ReportGenerateRequest, db: AsyncSession = Depends(get_db)
+) -> ReportDetailResponse:
     interview = await db.get(Interview, payload.session_id)
     if interview is None:
         raise HTTPException(status_code=404, detail="Interview session not found")

@@ -22,6 +22,14 @@ class AnswerQuality(BaseModel):
     feedback: str = Field(description="One-sentence rationale for the score")
 
 
+class AnswerJudgment(BaseModel):
+    """Structured output for an independent LLM-as-judge re-scoring of an
+    already-scored answer, blind to the original score."""
+
+    score: int = Field(ge=1, le=5, description="Independent 1-5 quality score for this answer")
+    reasoning: str = Field(description="One-sentence justification for the score")
+
+
 class QAExchange(BaseModel):
     question: str
     category: str
@@ -52,8 +60,8 @@ class InterviewAnswerRequest(BaseModel):
 
 class InterviewAnswerResponse(BaseModel):
     session_id: uuid.UUID
-    score: int
-    feedback: str
+    score: int | None = None
+    feedback: str | None = None
     is_follow_up: bool
     complete: bool
     question: str | None = None

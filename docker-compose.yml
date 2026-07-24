@@ -22,7 +22,12 @@ services:
     container_name: smart_hiring_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Host port 6379 is often taken by an unrelated project's Redis container
+      # on this machine, so this project's Redis is remapped to 6381 on the host.
+      # The `backend` service above talks to it over the Docker network as
+      # `redis:6379` regardless — this remap only affects host-side access
+      # (e.g. native `uvicorn` dev runs outside Docker).
+      - "6381:6379"
     volumes:
       - redis_data:/data
     healthcheck:

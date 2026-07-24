@@ -1,10 +1,10 @@
 import logging
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
-from app.core.config import settings
 from app.schemas.job import JDAnalysis
+from app.services import guardrails, llm_router
+from app.services.llm_router import TaskComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,20 @@ _EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
 
 
 class JDAnalyzerAgent:
-    """Extracts structured requirements from a job description using an LLM."""
+    """Extracts structured requirements from a job description using an LLM.
 
-    def __init__(self, model: str = "gpt-4o") -> None:
-        llm = ChatOpenAI(model=model, temperature=0, api_key=settings.OPENAI_API_KEY)
-        self._chain = _EXTRACTION_PROMPT | llm.with_structured_output(JDAnalysis)
+    Routed through llm_router (task-complexity-based model choice, cost
+    logging, and automatic cross-provider fallback) rather than hardcoding
+    a single OpenAI client — this used to be the one agent in the codebase
+    with no fallback if OpenAI had an outage.
+    """
 
     async def analyze(self, jd_text: str) -> JDAnalysis:
         if not jd_text.strip():
             raise ValueError("Job description text is empty")
-        result: JDAnalysis = await self._chain.ainvoke({"jd_text": jd_text})
+        guardrails.guard_input(jd_text, context="jd_analysis")
+        messages = _EXTRACTION_PROMPT.format_messages(jd_text=guardrails.wrap_untrusted(jd_text, "job_description"))
+        result: JDAnalysis = await llm_router.invoke_structured_with_fallback(
+            TaskComplexity.COMPLEX, "analyze_job_description", messages, JDAnalysis
+        )
         return result

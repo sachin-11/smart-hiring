@@ -1,15 +1,13 @@
 import logging
-import uuid
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate, CandidateStatus
 from app.models.job import Application, ApplicationStatus, Job
-from app.models.recruiter import Recruiter
 from app.schemas.candidate import (
     BulkActionResponse,
     BulkEmailRequest,
@@ -21,7 +19,7 @@ from app.services import notification_queue
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/candidates", tags=["candidates"])
+router = APIRouter(prefix="/candidates", tags=["candidates"], dependencies=[Depends(get_current_recruiter)])
 
 
 @router.get("", response_model=CandidateListResponse)
@@ -34,64 +32,64 @@ async def list_candidates(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> CandidateListResponse:
-    stmt = select(Candidate)
-    if status is not None:
-        stmt = stmt.where(Candidate.status == status)
-    if skill is not None:
-        stmt = stmt.where(Candidate.skills.any(skill))
-    stmt = stmt.order_by(Candidate.created_at.desc())
-
-    all_candidates = list((await db.execute(stmt)).scalars().all())
-    candidate_ids = [c.id for c in all_candidates]
-
     # Each candidate's most recent application (if any) drives the "applied JD" /
-    # "match score" columns — fetched separately and merged in Python rather than a
-    # correlated-subquery join, since this is a small admin list, not a hot path.
-    latest_application_by_candidate: dict[uuid.UUID, tuple[Application, Job]] = {}
-    if candidate_ids:
-        app_stmt = (
-            select(Application, Job)
-            .join(Job, Job.id == Application.job_id)
-            .where(Application.candidate_id.in_(candidate_ids))
-            .order_by(Application.candidate_id, Application.applied_at.desc())
+    # "match score" columns. A LATERAL join computes it per-candidate directly in
+    # SQL — needed so min_score/max_score filtering and LIMIT/OFFSET can both run
+    # at the DB level instead of pulling every candidate into Python first.
+    latest_application = (
+        select(
+            Application.match_score.label("match_score"),
+            Job.id.label("job_id"),
+            Job.title.label("job_title"),
         )
-        for application, job in (await db.execute(app_stmt)).all():
-            if application.candidate_id not in latest_application_by_candidate:
-                latest_application_by_candidate[application.candidate_id] = (application, job)
+        .join(Job, Job.id == Application.job_id)
+        .where(Application.candidate_id == Candidate.id)
+        .order_by(Application.applied_at.desc())
+        .limit(1)
+        .correlate(Candidate)
+        .subquery()
+        .lateral()
+    )
 
-    items = []
-    for candidate in all_candidates:
-        application, job = latest_application_by_candidate.get(candidate.id, (None, None))
-        match_score = application.match_score if application else None
+    base_stmt = select(Candidate, latest_application.c.match_score, latest_application.c.job_title, latest_application.c.job_id).outerjoin(
+        latest_application, true()
+    )
+    if status is not None:
+        base_stmt = base_stmt.where(Candidate.status == status)
+    if skill is not None:
+        base_stmt = base_stmt.where(Candidate.skills.any(skill))
+    if min_score is not None:
+        base_stmt = base_stmt.where(latest_application.c.match_score >= min_score)
+    if max_score is not None:
+        base_stmt = base_stmt.where(latest_application.c.match_score <= max_score)
 
-        if min_score is not None and (match_score is None or match_score < min_score):
-            continue
-        if max_score is not None and (match_score is None or match_score > max_score):
-            continue
+    total = (await db.execute(select(func.count()).select_from(base_stmt.subquery()))).scalar_one()
 
-        items.append(
-            CandidateListItem(
-                id=candidate.id,
-                full_name=candidate.full_name,
-                email=candidate.email,
-                status=candidate.status,
-                skills=candidate.skills or [],
-                applied_job_title=job.title if job else None,
-                applied_job_id=job.id if job else None,
-                match_score=match_score,
-                created_at=candidate.created_at,
-            )
+    page_stmt = base_stmt.order_by(Candidate.created_at.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(page_stmt)).all()
+
+    items = [
+        CandidateListItem(
+            id=candidate.id,
+            full_name=candidate.full_name,
+            email=candidate.email,
+            status=candidate.status,
+            skills=candidate.skills or [],
+            applied_job_title=job_title,
+            applied_job_id=job_id,
+            match_score=match_score,
+            created_at=candidate.created_at,
         )
+        for candidate, match_score, job_title, job_id in rows
+    ]
 
-    total = len(items)
-    return CandidateListResponse(candidates=items[offset : offset + limit], total=total)
+    return CandidateListResponse(candidates=items, total=total)
 
 
 @router.post("/bulk-shortlist", response_model=BulkActionResponse)
 async def bulk_shortlist(
     payload: BulkShortlistRequest,
     db: AsyncSession = Depends(get_db),
-    _recruiter: Recruiter = Depends(get_current_recruiter),
 ) -> BulkActionResponse:
     """Shortlists each candidate's most recent application. Candidates with no
     application yet are skipped — there's nothing to shortlist them for."""
@@ -117,7 +115,6 @@ async def bulk_shortlist(
 async def bulk_email(
     payload: BulkEmailRequest,
     db: AsyncSession = Depends(get_db),
-    _recruiter: Recruiter = Depends(get_current_recruiter),
 ) -> BulkActionResponse:
     job = await db.get(Job, payload.job_id)
     if job is None:

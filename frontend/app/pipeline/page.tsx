@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import PipelineProgress from "@/components/PipelineProgress"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -12,7 +13,8 @@ export default function PipelinePage() {
   const [activeIds, setActiveIds] = useState<{ candidateId: string; jobId: string } | null>(null)
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-lg flex-col gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-lg flex-col gap-6">
       <h1 className="text-2xl font-bold">Run Hiring Pipeline</h1>
 
       <div className="flex flex-col gap-3">
@@ -46,5 +48,6 @@ export default function PipelinePage() {
 
       {activeIds && <PipelineProgress candidateId={activeIds.candidateId} jobId={activeIds.jobId} />}
     </main>
+    </DashboardShell>
   )
 }

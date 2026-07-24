@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useDropzone } from "react-dropzone"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import ResumeCard from "@/components/ResumeCard"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
@@ -120,7 +121,8 @@ export default function UploadPage() {
   })
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col items-center gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-2xl flex-col items-center gap-6">
       <h1 className="text-2xl font-bold">Upload Resume</h1>
 
       {(stage === "idle" || stage === "uploading" || stage === "processing") && (
@@ -164,5 +166,6 @@ export default function UploadPage() {
         <p className="text-xs text-muted-foreground">Candidate ID: {candidateId}</p>
       )}
     </main>
+    </DashboardShell>
   )
 }

@@ -13,7 +13,7 @@ from app.models.candidate import Candidate
 from app.models.interview import Interview, InterviewStatus
 from app.models.job import Job
 from app.schemas.interview import AnswerQuality
-from app.services import llm_router
+from app.services import guardrails, llm_router
 from app.services.llm_router import TaskComplexity
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,32 @@ SESSION_KEY_PREFIX = "session:"
 SESSION_TTL_SECONDS = 2 * 60 * 60
 MAX_FOLLOW_UP_DEPTH = 2
 FOLLOW_UP_SCORE_THRESHOLD = 3
+
+INTRO_CATEGORY = "intro"
+INTRO_COUNT = 2
+
+
+def _build_intro_turns(candidate_name: str | None, job_title: str) -> list[dict]:
+    """A short, fixed (non-LLM, non-scored) rapport-building opener — greeting +
+    "how are you" + a self-introduction prompt — before the real, scored
+    questions start, mirroring how a real interview actually opens."""
+    first_name = candidate_name.split()[0] if candidate_name else None
+    greeting_name = f", {first_name}" if first_name else ""
+    return [
+        {
+            "question": (
+                f"Hello{greeting_name}! Welcome, and thank you for joining us today for the "
+                f"{job_title} role. How are you doing today?"
+            ),
+            "category": INTRO_CATEGORY,
+            "rationale": "Warm, formal opening greeting.",
+        },
+        {
+            "question": "Glad to hear that! Let's get started — could you tell me a little about yourself and your background?",
+            "category": INTRO_CATEGORY,
+            "rationale": "Open-ended self-introduction to build rapport before the scored questions begin.",
+        },
+    ]
 
 
 class InterviewTurnState(TypedDict):
@@ -35,13 +61,22 @@ class InterviewTurnState(TypedDict):
     current_category: str
     answer_text: str
     history: list[dict]
-    score: int
-    feedback: str
+    score: int | None
+    feedback: str | None
     is_follow_up: bool
     complete: bool
     next_question: str | None
     next_category: str | None
     errors: list[str]
+
+
+def _display_progress(current_q_index: int, all_turns_len: int) -> tuple[int, int]:
+    """Maps the internal turn index (which includes the intro turns at the
+    front) to a "Question X of Y" the candidate actually sees — the intro
+    isn't counted as one of the scored questions."""
+    real_total = all_turns_len - INTRO_COUNT
+    real_index = max(0, current_q_index - INTRO_COUNT)
+    return real_index, real_total
 
 
 # --- Nodes -----------------------------------------------------------------------
@@ -50,22 +85,31 @@ class InterviewTurnState(TypedDict):
 async def analyze_answer_node(state: InterviewTurnState) -> dict:
     """Scores answer quality 1-5 via a fast Groq model — response latency here
     directly gates how quickly the next question can be voiced back to the candidate."""
+    if state["current_category"] == INTRO_CATEGORY:
+        # Rapport-building small talk isn't scored — no LLM call needed, just
+        # record it and move straight on (see _route_after_analysis).
+        exchange = {
+            "question": state["current_question"],
+            "category": INTRO_CATEGORY,
+            "is_follow_up": False,
+            "answer": state["answer_text"],
+            "score": None,
+            "feedback": None,
+        }
+        return {"score": None, "feedback": None, "history": [*state["history"], exchange]}
     try:
+        guardrails.guard_input(state["answer_text"], context=f"interview_answer session={state['session_id']}")
         prompt = (
             "You are grading a candidate's interview answer for quality: how specific, "
             "well-reasoned, and directly responsive it is to the question asked. Vague, "
             "evasive, or off-topic answers score low; concrete, well-supported answers score high.\n\n"
             f"Question ({state['current_category']}): {state['current_question']}\n"
-            f"Candidate's answer: {state['answer_text']}\n\n"
+            f"Candidate's answer: {guardrails.wrap_untrusted(state['answer_text'], 'candidate_answer')}\n\n"
             "Score from 1 (weak/evasive) to 5 (excellent) and give one-sentence feedback."
         )
-        llm, model_name = llm_router.get_llm(TaskComplexity.SIMPLE, estimated_tokens=llm_router.estimate_tokens(prompt))
-        structured_llm = llm.with_structured_output(AnswerQuality, include_raw=True)
-        result = await structured_llm.ainvoke(prompt)
-        parsed: AnswerQuality = result["parsed"]
-
-        input_tokens, output_tokens = llm_router.extract_usage(result["raw"])
-        await llm_router.log_cost("analyze_interview_answer", model_name, input_tokens, output_tokens)
+        parsed = await llm_router.invoke_structured_with_fallback(
+            TaskComplexity.SIMPLE, "analyze_interview_answer", prompt, AnswerQuality
+        )
 
         exchange = {
             "question": state["current_question"],
@@ -89,7 +133,7 @@ async def generate_follow_up_node(state: InterviewTurnState) -> dict:
             "focused follow-up question that probes for the specific detail they missed. "
             "Stay in the same category and do not repeat the original question verbatim.\n\n"
             f"Original question ({state['current_category']}): {state['current_question']}\n"
-            f"Candidate's answer: {state['answer_text']}\n"
+            f"Candidate's answer: {guardrails.wrap_untrusted(state['answer_text'], 'candidate_answer')}\n"
             f"Why it was weak: {state['feedback']}\n\n"
             "Reply with only the follow-up question text."
         )
@@ -141,6 +185,8 @@ async def error_handler_node(state: InterviewTurnState) -> dict:
 def _route_after_analysis(state: InterviewTurnState) -> str:
     if state["errors"]:
         return "error_handler"
+    if state["current_category"] == INTRO_CATEGORY:
+        return "advance"
     if state["score"] < FOLLOW_UP_SCORE_THRESHOLD and state["follow_up_depth"] < MAX_FOLLOW_UP_DEPTH:
         return "generate_follow_up"
     return "advance"
@@ -227,6 +273,8 @@ async def start_interview(candidate_id: uuid.UUID, job_id: uuid.UUID) -> dict:
             "responsibilities": job.responsibilities or [],
             "seniority_level": job.seniority_level.value if job.seniority_level else None,
         }
+        candidate_name = candidate.full_name
+        job_title = job.title
 
         interview = Interview(
             id=uuid.uuid4(),
@@ -239,21 +287,22 @@ async def start_interview(candidate_id: uuid.UUID, job_id: uuid.UUID) -> dict:
         session_id = interview.id
 
     questions = await generate_questions(jd_data, resume_data)
-    first_q = questions[0]
+    all_turns = _build_intro_turns(candidate_name, job_title) + [q.model_dump() for q in questions]
+    first_turn = all_turns[0]
 
     state: InterviewTurnState = {
         "session_id": str(session_id),
         "candidate_id": str(candidate_id),
         "job_id": str(job_id),
-        "questions": [q.model_dump() for q in questions],
+        "questions": all_turns,
         "current_q_index": 0,
         "follow_up_depth": 0,
-        "current_question": first_q.question,
-        "current_category": first_q.category,
+        "current_question": first_turn["question"],
+        "current_category": first_turn["category"],
         "answer_text": "",
         "history": [],
-        "score": 0,
-        "feedback": "",
+        "score": None,
+        "feedback": None,
         "is_follow_up": False,
         "complete": False,
         "next_question": None,
@@ -262,12 +311,13 @@ async def start_interview(candidate_id: uuid.UUID, job_id: uuid.UUID) -> dict:
     }
     await _save_session(session_id, state)
 
+    display_index, display_total = _display_progress(0, len(all_turns))
     return {
         "session_id": session_id,
-        "question": first_q.question,
-        "category": first_q.category,
-        "question_index": 0,
-        "total_questions": len(questions),
+        "question": first_turn["question"],
+        "category": first_turn["category"],
+        "question_index": display_index,
+        "total_questions": display_total,
     }
 
 
@@ -305,6 +355,7 @@ async def submit_answer(session_id: uuid.UUID, answer_text: str) -> dict:
         await _save_session(session_id, state)
         raise RuntimeError("; ".join(state["errors"]))
 
+    display_index, display_total = _display_progress(state["current_q_index"], len(state["questions"]))
     result = {
         "session_id": session_id,
         "score": state["score"],
@@ -313,8 +364,8 @@ async def submit_answer(session_id: uuid.UUID, answer_text: str) -> dict:
         "complete": state["complete"],
         "question": None,
         "category": None,
-        "question_index": state["current_q_index"],
-        "total_questions": len(state["questions"]),
+        "question_index": display_index,
+        "total_questions": display_total,
     }
 
     if state["complete"]:
@@ -348,11 +399,12 @@ async def get_live_transcript(session_id: uuid.UUID) -> dict | None:
             "feedback": None,
         }
     )
+    display_index, display_total = _display_progress(state["current_q_index"], len(state["questions"]))
     return {
         "candidate_id": state["candidate_id"],
         "job_id": state["job_id"],
         "status": InterviewStatus.IN_PROGRESS,
         "exchanges": exchanges,
-        "question_index": state["current_q_index"],
-        "total_questions": len(state["questions"]),
+        "question_index": display_index,
+        "total_questions": display_total,
     }

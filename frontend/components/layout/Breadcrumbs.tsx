@@ -16,7 +16,7 @@ export default function Breadcrumbs() {
   const segments = pathname.split("/").filter(Boolean)
 
   return (
-    <nav className="flex items-center gap-1.5 px-6 pt-4 text-sm text-muted-foreground">
+    <nav className="flex items-center gap-1.5 px-6 pt-4 text-sm text-muted-foreground print:hidden">
       <Link href="/dashboard" className="hover:text-foreground">
         Home
       </Link>

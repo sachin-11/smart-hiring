@@ -67,13 +67,9 @@ async def generate_questions(jd_data: dict, resume_data: dict, total: int = TOTA
         "`category` must be exactly one of: technical, behavioral, situational, culture."
     )
 
-    llm, model_name = llm_router.get_llm(TaskComplexity.COMPLEX, estimated_tokens=llm_router.estimate_tokens(prompt))
-    structured_llm = llm.with_structured_output(InterviewQuestionSet, include_raw=True)
-    result = await structured_llm.ainvoke(prompt)
-    parsed: InterviewQuestionSet = result["parsed"]
-
-    input_tokens, output_tokens = llm_router.extract_usage(result["raw"])
-    await llm_router.log_cost("generate_interview_questions", model_name, input_tokens, output_tokens)
+    parsed = await llm_router.invoke_structured_with_fallback(
+        TaskComplexity.COMPLEX, "generate_interview_questions", prompt, InterviewQuestionSet
+    )
 
     if not parsed.questions:
         logger.warning("question_generator produced an empty question set; falling back to a generic set")

@@ -42,6 +42,14 @@ export interface RagasAlertItem {
   avg_faithfulness: number
 }
 
+export interface JudgeRunResponse {
+  run_id: string
+  sample_size: number
+  agreement_rate: number
+  avg_absolute_score_diff: number
+  alert_triggered: boolean
+}
+
 export interface AnalyticsDashboardResponse {
   total_pipeline_runs: number
   avg_match_score: number | null

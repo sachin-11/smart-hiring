@@ -7,20 +7,40 @@ import { Briefcase, FileText, TrendingUp, Upload, Users } from "lucide-react"
 import DashboardShell from "@/components/layout/DashboardShell"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import type { ActivityItem, DashboardActivityResponse, DashboardStats } from "@/types/dashboard"
 
-function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+const STAT_TINTS = {
+  indigo: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400",
+  teal: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
+  amber: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  violet: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+} as const
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  tint,
+  loading,
+}: {
+  icon: React.ElementType
+  label: string
+  value: string
+  tint: keyof typeof STAT_TINTS
+  loading?: boolean
+}) {
   return (
-    <Card>
+    <Card className="transition-shadow hover:shadow-md">
       <CardContent className="flex items-center gap-4 p-4">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-lg", STAT_TINTS[tint])}>
           <Icon className="size-5" />
         </div>
-        <div>
+        <div className="flex flex-col gap-1">
           <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="text-xl font-bold">{value}</p>
+          {loading ? <Skeleton className="h-6 w-14" /> : <p className="text-xl font-bold tabular-nums">{value}</p>}
         </div>
       </CardContent>
     </Card>
@@ -64,17 +84,33 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-bold">Dashboard</h1>
 
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatCard icon={Users} label="Total Candidates" value={stats ? String(stats.total_candidates) : "—"} />
-          <StatCard icon={Briefcase} label="Active JDs" value={stats ? String(stats.active_jds) : "—"} />
+          <StatCard
+            icon={Users}
+            label="Total Candidates"
+            value={stats ? String(stats.total_candidates) : "—"}
+            tint="indigo"
+            loading={statsQuery.isLoading}
+          />
+          <StatCard
+            icon={Briefcase}
+            label="Active JDs"
+            value={stats ? String(stats.active_jds) : "—"}
+            tint="violet"
+            loading={statsQuery.isLoading}
+          />
           <StatCard
             icon={TrendingUp}
             label="Avg Match Score"
             value={stats?.avg_match_score != null ? `${stats.avg_match_score.toFixed(1)}%` : "—"}
+            tint="teal"
+            loading={statsQuery.isLoading}
           />
           <StatCard
             icon={FileText}
             label="Interviews Scheduled"
             value={stats ? String(stats.interviews_scheduled) : "—"}
+            loading={statsQuery.isLoading}
+            tint="amber"
           />
         </div>
 
@@ -84,7 +120,16 @@ export default function DashboardPage() {
               <CardTitle>Recent Pipeline Activity</CardTitle>
             </CardHeader>
             <CardContent>
-              {activityQuery.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+              {activityQuery.isLoading && (
+                <div className="flex flex-col gap-3">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className="flex items-center justify-between gap-4 py-2">
+                      <Skeleton className="h-4 w-64" />
+                      <Skeleton className="h-3 w-12 shrink-0" />
+                    </div>
+                  ))}
+                </div>
+              )}
               {activityQuery.data?.items.length === 0 && (
                 <p className="text-sm text-muted-foreground">No activity yet.</p>
               )}

@@ -37,6 +37,36 @@ class RagEvalLog(Base):
         return f"<RagEvalLog id={self.id} faithfulness={self.faithfulness}>"
 
 
+class AnswerJudgeLog(Base):
+    """One LLM-as-judge sample: an independent model re-scores an already-scored
+    interview answer (blind to the original score), and we log both scores to
+    measure agreement — catches systematic scoring bias/drift in the model
+    that scores answers live, the way a human calibration review would."""
+
+    __tablename__ = "answer_judge_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    interview_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+
+    original_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    judge_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    judge_reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    agrees: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    alert_triggered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<AnswerJudgeLog id={self.id} original={self.original_score} judge={self.judge_score}>"
+
+
 class DriftReport(Base):
     """One embedding-drift check (baseline vs. current resume-embedding distribution)."""
 

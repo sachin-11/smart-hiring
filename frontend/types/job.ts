@@ -40,4 +40,5 @@ export interface JobListItem {
 
 export interface JobListResponse {
   jobs: JobListItem[]
+  total: number
 }

@@ -163,7 +163,7 @@ Written up honestly rather than glossed over — see the module docs for the ful
 - **No automated test suite yet.** Every module here was verified through real, live smoke testing against actual services (not mocks) during development, but there's no committed pytest suite — CI currently runs import/type/lint checks instead.
 - **AWS deployment (ECR/ECS) is unverified.** The GitHub Actions workflow and ECS task definitions follow standard patterns and are syntax-validated, but there's no AWS account/cluster in this environment to deploy to. The Docker builds and containers, however, *are* verified — both images build and the backend container was run and health-checked against real Postgres/Redis.
 - **Evidently AI was deliberately not used** for drift detection (Module 7) — it has a real, verified dependency conflict that breaks file uploads. PSI is implemented directly instead.
-- **Existing candidate-facing flows (upload, interview) aren't behind recruiter auth** — only genuinely recruiter-only actions (dashboard, bulk actions, notifications) are protected, by design.
+- **The interview WebSocket (`/ws/interview/{session_id}`) is unauthenticated.** Every other route (including `/interview`, `/report`, `/pipeline`) requires a recruiter bearer token via router-level `Depends(get_current_recruiter)`, but browsers can't attach an Authorization header to a WebSocket handshake. It relies on `session_id` being an unguessable UUID; add a query-param token check if that guarantee isn't strong enough for your deployment.
 
 ## License
 

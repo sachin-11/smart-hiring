@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 
 import SkillTagInput from "@/components/SkillTagInput"
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -51,7 +52,8 @@ export default function NewJobPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-2xl flex-col gap-6">
       <h1 className="text-2xl font-bold">Create Job</h1>
 
       <form onSubmit={onSubmit} className="flex flex-col gap-5">
@@ -115,5 +117,6 @@ export default function NewJobPage() {
         </Button>
       </form>
     </main>
+    </DashboardShell>
   )
 }

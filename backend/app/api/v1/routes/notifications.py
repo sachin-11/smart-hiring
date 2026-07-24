@@ -7,20 +7,18 @@ from app.core.database import get_db
 from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate
 from app.models.job import Job
-from app.models.recruiter import Recruiter
 from app.schemas.notifications import NotifyResponse, ShortlistNotifyRequest, SlackNotifyRequest
 from app.services import notification_queue
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/notify", tags=["notifications"])
+router = APIRouter(prefix="/notify", tags=["notifications"], dependencies=[Depends(get_current_recruiter)])
 
 
 @router.post("/shortlist", response_model=NotifyResponse)
 async def notify_shortlist(
     payload: ShortlistNotifyRequest,
     db: AsyncSession = Depends(get_db),
-    _recruiter: Recruiter = Depends(get_current_recruiter),
 ) -> NotifyResponse:
     candidate = await db.get(Candidate, payload.candidate_id)
     if candidate is None:
@@ -45,9 +43,7 @@ async def notify_shortlist(
 
 
 @router.post("/slack", response_model=NotifyResponse)
-async def notify_slack(
-    payload: SlackNotifyRequest, _recruiter: Recruiter = Depends(get_current_recruiter)
-) -> NotifyResponse:
+async def notify_slack(payload: SlackNotifyRequest) -> NotifyResponse:
     await notification_queue.enqueue({"type": "slack", "text": payload.text})
     processed = await notification_queue.drain_queue()
     return NotifyResponse(queued=True, processed=processed)

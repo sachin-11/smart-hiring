@@ -23,6 +23,14 @@ class DriftRunResponse(BaseModel):
     psi_threshold: float
 
 
+class JudgeRunResponse(BaseModel):
+    run_id: uuid.UUID
+    sample_size: int
+    agreement_rate: float
+    avg_absolute_score_diff: float
+    alert_triggered: bool
+
+
 class RagasTrendPoint(BaseModel):
     run_id: uuid.UUID
     created_at: datetime

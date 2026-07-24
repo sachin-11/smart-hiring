@@ -2,15 +2,19 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import close_db, engine, init_db
+from app.core.rate_limit import limiter
 from app.core.redis_client import check_redis_connection, close_redis_pool
+from app.services.mlops.scheduler import start_scheduler, stop_scheduler
 from app.services.monitoring import PrometheusMiddleware, get_metrics_response
 
 logging.basicConfig(
@@ -28,8 +32,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Startup failed while initializing the database")
         raise
+    start_scheduler()
     yield
     logger.info("Shutting down %s", settings.APP_NAME)
+    stop_scheduler()
     await close_db()
     await close_redis_pool()
 
@@ -48,6 +54,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(PrometheusMiddleware)
+app.add_middleware(SlowAPIMiddleware)
+
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    # Match the {"detail": ...} shape the rest of the API (and the frontend's
+    # extractErrorMessage helper) expects, instead of slowapi's default {"error": ...}.
+    return JSONResponse(status_code=429, content={"detail": f"Too many requests — {exc.detail}. Please try again shortly."})
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 

@@ -1,5 +1,5 @@
 export type InterviewStatus = "scheduled" | "in_progress" | "completed" | "cancelled" | "no_show"
-export type QuestionCategory = "technical" | "behavioral" | "situational" | "culture"
+export type QuestionCategory = "technical" | "behavioral" | "situational" | "culture" | "intro"
 
 export interface InterviewStartResponse {
   session_id: string
@@ -12,8 +12,8 @@ export interface InterviewStartResponse {
 
 export interface InterviewAnswerResponse {
   session_id: string
-  score: number
-  feedback: string
+  score: number | null
+  feedback: string | null
   is_follow_up: boolean
   complete: boolean
   question: string | null
@@ -48,8 +48,8 @@ export type InterviewWsServerMessage =
   | { type: "transcript"; text: string }
   | {
       type: "result"
-      score: number
-      feedback: string
+      score: number | null
+      feedback: string | null
       is_follow_up: boolean
       complete: boolean
       question: string | null
@@ -57,5 +57,7 @@ export type InterviewWsServerMessage =
       question_index: number
       total_questions: number
     }
-  | { type: "audio_start" }
+  | { type: "audio_start"; chunk_count: number }
+  | { type: "audio_end" }
+  | { type: "nudge" }
   | { type: "error"; detail: string }

@@ -4,9 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams } from "next/navigation"
 import { Clock, Keyboard, Mic } from "lucide-react"
 
+import AIAvatar from "@/components/AIAvatar"
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { LoadingState } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import VoiceRecorder from "@/components/VoiceRecorder"
 import { api } from "@/lib/api"
@@ -35,6 +38,7 @@ function scoreColor(score: number | null): string {
 }
 
 function categoryLabel(category: QuestionCategory): string {
+  if (category === "intro") return "Introduction"
   return category.charAt(0).toUpperCase() + category.slice(1)
 }
 
@@ -62,10 +66,22 @@ export default function InterviewRoomPage() {
   const [questionStartedAt, setQuestionStartedAt] = useState(0)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
 
+  const [nudgeVisible, setNudgeVisible] = useState(false)
+  const [aiSpeaking, setAiSpeaking] = useState(false)
+  const [playbackAnalyser, setPlaybackAnalyser] = useState<AnalyserNode | null>(null)
+
   const audioRef = useRef<HTMLAudioElement>(null)
+  const playbackCtxRef = useRef<AudioContext | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const currentQuestionRef = useRef<CurrentQuestion | null>(null)
   const lastAnswerTextRef = useRef<string>("")
+
+  // Queue for sentence-chunked TTS audio streamed over the voice WS: chunks
+  // arrive one at a time as they're synthesized, and are played back-to-back
+  // instead of waiting for the whole response before any audio starts.
+  const audioQueueRef = useRef<string[]>([])
+  const isPlayingQueueRef = useRef(false)
+  const currentChunkUrlRef = useRef<string | null>(null)
 
   useEffect(() => {
     currentQuestionRef.current = currentQuestion
@@ -99,6 +115,19 @@ export default function InterviewRoomPage() {
           setQuestionIndex(data.question_index)
           setTotalQuestions(data.total_questions)
           setQuestionStartedAt(Date.now())
+
+          // Pick up the first question's audio handed off from the start
+          // page (see app/interview/page.tsx) — only relevant the moment
+          // after starting; a plain refresh mid-interview has no history yet
+          // either at the very first turn, so also gate on the key existing.
+          if (answered.length === 0) {
+            const key = `interview-first-audio:${sessionId}`
+            const pendingAudio = sessionStorage.getItem(key)
+            if (pendingAudio) {
+              sessionStorage.removeItem(key)
+              setAudioUrl(pendingAudio)
+            }
+          }
         }
       } catch {
         if (!cancelled) setLoadError("Could not load this interview session. It may have expired.")
@@ -128,16 +157,85 @@ export default function InterviewRoomPage() {
     }
   }, [audioUrl])
 
-  const setBlobAudio = useCallback((buffer: ArrayBuffer) => {
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-    const url = URL.createObjectURL(new Blob([buffer], { type: "audio/mpeg" }))
-    objectUrlRef.current = url
-    setAudioUrl(url)
+  // Routes the AI's own audio output through an AnalyserNode so AIAvatar can
+  // react to its actual amplitude in real time — the playback counterpart to
+  // the mic AnalyserNode VoiceRecorder sets up for the candidate's waveform.
+  // createMediaElementSource can only be called once per <audio> element, so
+  // this must run exactly once for its lifetime.
+  useEffect(() => {
+    const audioEl = audioRef.current
+    if (!audioEl || playbackCtxRef.current) return
+
+    const ctx = new AudioContext()
+    playbackCtxRef.current = ctx
+    const source = ctx.createMediaElementSource(audioEl)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 1024
+    source.connect(analyser)
+    analyser.connect(ctx.destination)
+    setPlaybackAnalyser(analyser)
+
+    return () => {
+      ctx.close().catch(() => {})
+      playbackCtxRef.current = null
+    }
+  }, [])
+
+  // Stops whatever's currently playing/queued — used for barge-in (candidate
+  // clicks "Start speaking" while the AI is still talking) and cleanup.
+  const stopAllAudio = useCallback(() => {
+    audioRef.current?.pause()
+    audioQueueRef.current.forEach((url) => URL.revokeObjectURL(url))
+    audioQueueRef.current = []
+    isPlayingQueueRef.current = false
+    if (currentChunkUrlRef.current) {
+      URL.revokeObjectURL(currentChunkUrlRef.current)
+      currentChunkUrlRef.current = null
+    }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+    setAudioUrl(null)
+  }, [])
+
+  const playNextQueuedChunk = useCallback(() => {
+    if (currentChunkUrlRef.current) {
+      URL.revokeObjectURL(currentChunkUrlRef.current)
+      currentChunkUrlRef.current = null
+    }
+    const next = audioQueueRef.current.shift()
+    if (!next) {
+      isPlayingQueueRef.current = false
+      return
+    }
+    isPlayingQueueRef.current = true
+    currentChunkUrlRef.current = next
+    if (audioRef.current) {
+      audioRef.current.src = next
+      audioRef.current.play().catch(() => {})
+    }
+  }, [])
+
+  const handleAudioChunk = useCallback(
+    (buffer: ArrayBuffer) => {
+      const url = URL.createObjectURL(new Blob([buffer], { type: "audio/mpeg" }))
+      audioQueueRef.current.push(url)
+      if (!isPlayingQueueRef.current) playNextQueuedChunk()
+    },
+    [playNextQueuedChunk]
+  )
+
+  const handleNudge = useCallback(() => {
+    setNudgeVisible(true)
+    setTimeout(() => setNudgeVisible(false), 5000)
   }, [])
 
   useEffect(() => {
     return () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+      if (currentChunkUrlRef.current) URL.revokeObjectURL(currentChunkUrlRef.current)
+      audioQueueRef.current.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [])
 
@@ -145,8 +243,8 @@ export default function InterviewRoomPage() {
     async (
       answer: string,
       result: {
-        score: number
-        feedback: string
+        score: number | null
+        feedback: string | null
         is_follow_up: boolean
         complete: boolean
         question: string | null
@@ -234,33 +332,53 @@ export default function InterviewRoomPage() {
 
   if (loading) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-4xl items-center justify-center p-8">
-        <p className="text-muted-foreground">Loading interview session…</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-4xl items-center justify-center">
+          <LoadingState label="Loading interview session…" />
+        </main>
+      </DashboardShell>
     )
   }
 
   if (loadError) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-4xl items-center justify-center p-8">
-        <p className="text-destructive">{loadError}</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-4xl items-center justify-center">
+          <p className="text-destructive">{loadError}</p>
+        </main>
+      </DashboardShell>
     )
   }
 
   return (
-    <main className="mx-auto grid min-h-screen max-w-5xl grid-cols-1 gap-6 p-8 lg:grid-cols-[1fr_360px]">
-      <audio ref={audioRef} className="hidden" />
+    <DashboardShell>
+    <main className="mx-auto grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
+      <audio
+        ref={audioRef}
+        className="hidden"
+        onEnded={playNextQueuedChunk}
+        onPlay={() => setAiSpeaking(true)}
+        onPause={() => setAiSpeaking(false)}
+      />
 
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">AI Interview</h1>
-          {!completed && totalQuestions > 0 && (
+          {!completed && totalQuestions > 0 && currentQuestion?.category !== "intro" && (
             <span className="text-sm text-muted-foreground">
               Question {Math.min(questionIndex + 1, totalQuestions)} of {totalQuestions}
             </span>
           )}
+          {!completed && currentQuestion?.category === "intro" && (
+            <span className="text-sm text-muted-foreground">Getting started…</span>
+          )}
         </div>
+
+        {!completed && (
+          <div className="flex justify-center py-2">
+            <AIAvatar analyser={playbackAnalyser} speaking={aiSpeaking} />
+          </div>
+        )}
 
         {completed ? (
           <Card>
@@ -316,6 +434,10 @@ export default function InterviewRoomPage() {
                   </Button>
                 </div>
 
+                {nudgeVisible && (
+                  <p className="text-sm text-muted-foreground">Still there? Take your time.</p>
+                )}
+
                 {mode === "text" ? (
                   <div className="flex flex-col gap-3">
                     <Textarea
@@ -345,7 +467,9 @@ export default function InterviewRoomPage() {
                       sessionId={sessionId}
                       onTranscript={handleVoiceTranscript}
                       onResult={handleVoiceResult}
-                      onAudio={setBlobAudio}
+                      onAudioChunk={handleAudioChunk}
+                      onBeforeRecording={stopAllAudio}
+                      onNudge={handleNudge}
                       onError={handleVoiceError}
                     />
                   </div>
@@ -384,5 +508,6 @@ export default function InterviewRoomPage() {
         </div>
       </div>
     </main>
+    </DashboardShell>
   )
 }

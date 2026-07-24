@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -25,6 +26,13 @@ export default function InterviewStartPage() {
         candidate_id: candidateId,
         job_id: jobId,
       })
+      // The interview room page loads its state from GET /transcript, which
+      // has no audio field — hand off the first question's already-synthesized
+      // audio via sessionStorage so it still gets played once there, instead
+      // of silently dropping it on this navigation.
+      if (data.audio_url) {
+        sessionStorage.setItem(`interview-first-audio:${data.session_id}`, data.audio_url)
+      }
       router.push(`/interview/${data.session_id}`)
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to start the interview."))
@@ -33,7 +41,8 @@ export default function InterviewStartPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-lg flex-col gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-lg flex-col gap-6">
       <h1 className="text-2xl font-bold">Start AI Interview</h1>
 
       <div className="flex flex-col gap-3">
@@ -65,5 +74,6 @@ export default function InterviewStartPage() {
         </Button>
       </div>
     </main>
+    </DashboardShell>
   )
 }

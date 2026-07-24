@@ -1,19 +1,20 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.jd_analyzer import JDAnalyzerAgent
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
 from app.models.job import Application, Job, JobStatus
 from app.schemas.job import JobCreateRequest, JobDetailResponse, JobListItem, JobListResponse
 from app.services import embedding_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
+router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(get_current_recruiter)])
 
 _jd_agent: JDAnalyzerAgent | None = None
 
@@ -71,7 +72,13 @@ async def create_job(payload: JobCreateRequest, db: AsyncSession = Depends(get_d
 
 
 @router.get("", response_model=JobListResponse)
-async def list_jobs(db: AsyncSession = Depends(get_db)) -> JobListResponse:
+async def list_jobs(
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> JobListResponse:
+    total = (await db.execute(select(func.count()).select_from(Job))).scalar_one()
+
     stmt = (
         select(
             Job,
@@ -81,6 +88,8 @@ async def list_jobs(db: AsyncSession = Depends(get_db)) -> JobListResponse:
         .outerjoin(Application, Application.job_id == Job.id)
         .group_by(Job.id)
         .order_by(Job.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     rows = (await db.execute(stmt)).all()
     jobs = [
@@ -96,7 +105,7 @@ async def list_jobs(db: AsyncSession = Depends(get_db)) -> JobListResponse:
         )
         for job, applicant_count, top_match_score in rows
     ]
-    return JobListResponse(jobs=jobs)
+    return JobListResponse(jobs=jobs, total=total)
 
 
 @router.get("/{job_id}", response_model=JobDetailResponse)

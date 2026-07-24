@@ -2,15 +2,19 @@ import enum
 import json
 import logging
 import time
+from typing import Any, TypeVar
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.redis_client import get_redis_client
 from app.services.monitoring import llm_token_usage_total
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +58,8 @@ def choose_model(complexity: TaskComplexity, estimated_tokens: int = 0) -> str:
 _llm_cache: dict[str, BaseChatModel] = {}
 
 
-def get_llm(
-    complexity: TaskComplexity, estimated_tokens: int = 0, temperature: float = 0
-) -> tuple[BaseChatModel, str]:
-    """Returns (chat_model, model_name) chosen by the routing policy."""
-    model_name = choose_model(complexity, estimated_tokens)
+def _get_llm(model_name: str, temperature: float = 0) -> BaseChatModel:
     cache_key = f"{model_name}:{temperature}"
-
     if cache_key not in _llm_cache:
         if model_name == GROQ_MODEL:
             _llm_cache[cache_key] = ChatGroq(
@@ -70,7 +69,19 @@ def get_llm(
             _llm_cache[cache_key] = ChatOpenAI(
                 model=model_name, temperature=temperature, api_key=settings.OPENAI_API_KEY
             )
-    return _llm_cache[cache_key], model_name
+    return _llm_cache[cache_key]
+
+
+def _fallback_model(model_name: str) -> str:
+    return GPT4O_MODEL if model_name == GROQ_MODEL else GROQ_MODEL
+
+
+def get_llm(
+    complexity: TaskComplexity, estimated_tokens: int = 0, temperature: float = 0
+) -> tuple[BaseChatModel, str]:
+    """Returns (chat_model, model_name) chosen by the routing policy."""
+    model_name = choose_model(complexity, estimated_tokens)
+    return _get_llm(model_name, temperature), model_name
 
 
 def extract_usage(response: BaseMessage) -> tuple[int, int]:
@@ -152,18 +163,79 @@ async def get_recent_costs_by_model(since_timestamp: float) -> dict[str, float]:
 async def invoke_with_routing(
     complexity: TaskComplexity, task_name: str, prompt: str, temperature: float = 0
 ) -> str:
-    """Plain-text invocation with routing + cost logging.
+    """Plain-text invocation with routing, cost logging, and automatic
+    single-retry fallback to the other provider if the primary call raises
+    (timeout, rate limit, outage) — a Groq or OpenAI incident degrades this
+    call to higher latency/cost instead of failing it outright.
 
-    For structured output, call get_llm() directly and build your own chain
-    so you can pass include_raw=True and log usage from the raw message.
+    For structured output use invoke_structured_with_fallback(), which gets
+    the same fallback behavior.
     """
     estimated = estimate_tokens(prompt)
-    llm, model_name = get_llm(complexity, estimated_tokens=estimated, temperature=temperature)
-    response = await llm.ainvoke(prompt)
+    primary_model = choose_model(complexity, estimated)
+    fallback_model = _fallback_model(primary_model)
 
-    input_tokens, output_tokens = extract_usage(response)
-    if input_tokens == 0 and output_tokens == 0:
-        input_tokens, output_tokens = estimated, estimate_tokens(str(response.content))
-    await log_cost(task_name, model_name, input_tokens, output_tokens)
+    last_exc: Exception | None = None
+    for attempt, model_name in enumerate((primary_model, fallback_model)):
+        try:
+            llm = _get_llm(model_name, temperature)
+            response = await llm.ainvoke(prompt)
 
-    return str(response.content)
+            input_tokens, output_tokens = extract_usage(response)
+            if input_tokens == 0 and output_tokens == 0:
+                input_tokens, output_tokens = estimated, estimate_tokens(str(response.content))
+            await log_cost(task_name, model_name, input_tokens, output_tokens)
+
+            if attempt == 1:
+                logger.warning(
+                    "LLM fallback succeeded for task=%s using %s after %s failed", task_name, model_name, primary_model
+                )
+            return str(response.content)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("LLM call failed (task=%s, model=%s): %s", task_name, model_name, exc)
+
+    raise RuntimeError(
+        f"Both primary ({primary_model}) and fallback ({fallback_model}) LLM calls failed for task={task_name}"
+    ) from last_exc
+
+
+async def invoke_structured_with_fallback(
+    complexity: TaskComplexity,
+    task_name: str,
+    prompt: str | list[Any],
+    output_schema: type[SchemaT],
+    temperature: float = 0,
+) -> SchemaT:
+    """Structured-output invocation with the same routing, cost logging, and
+    cross-provider fallback as invoke_with_routing(). `prompt` may be a plain
+    string or a pre-formatted message list (e.g. from a ChatPromptTemplate),
+    for callers that need a system/human role split."""
+    estimate_source = prompt if isinstance(prompt, str) else " ".join(str(getattr(m, "content", m)) for m in prompt)
+    estimated = estimate_tokens(estimate_source)
+    primary_model = choose_model(complexity, estimated)
+    fallback_model = _fallback_model(primary_model)
+
+    last_exc: Exception | None = None
+    for attempt, model_name in enumerate((primary_model, fallback_model)):
+        try:
+            llm = _get_llm(model_name, temperature)
+            structured_llm = llm.with_structured_output(output_schema, include_raw=True)
+            result = await structured_llm.ainvoke(prompt)
+            parsed: SchemaT = result["parsed"]
+
+            input_tokens, output_tokens = extract_usage(result["raw"])
+            await log_cost(task_name, model_name, input_tokens, output_tokens)
+
+            if attempt == 1:
+                logger.warning(
+                    "LLM fallback succeeded for task=%s using %s after %s failed", task_name, model_name, primary_model
+                )
+            return parsed
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("LLM call failed (task=%s, model=%s): %s", task_name, model_name, exc)
+
+    raise RuntimeError(
+        f"Both primary ({primary_model}) and fallback ({fallback_model}) LLM calls failed for task={task_name}"
+    ) from last_exc

@@ -1,5 +1,6 @@
 import io
 import logging
+import re
 
 import webrtcvad
 
@@ -37,6 +38,15 @@ async def synthesize_speech(text: str, voice: str = TTS_VOICE) -> bytes:
     return await response.aread()
 
 
+def split_into_speech_chunks(text: str) -> list[str]:
+    """Splits a response into sentence-ish chunks so the caller can synthesize
+    and send them one at a time — the candidate hears the first sentence while
+    later ones are still being generated, instead of silence for the whole
+    response followed by one long clip."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    return sentences or [text]
+
+
 class VoiceActivityDetector:
     """Wraps webrtcvad frame-by-frame speech detection plus trailing-silence
     tracking, so a caller streaming raw PCM chunks over a WebSocket can tell
@@ -48,6 +58,13 @@ class VoiceActivityDetector:
         self._speech_buffer = b""
         self._consecutive_silence = 0
         self._has_heard_speech = False
+
+    @property
+    def has_heard_speech(self) -> bool:
+        """True once any speech has been detected in the current utterance —
+        lets a caller distinguish "candidate is silently thinking" (frames
+        still arriving, no speech yet) from genuine idle for timeout purposes."""
+        return self._has_heard_speech
 
     def _frames(self) -> list[bytes]:
         frames = []

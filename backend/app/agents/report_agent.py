@@ -137,12 +137,8 @@ async def generate_report(
         "Output:"
     )
 
-    llm, model_name = llm_router.get_llm(TaskComplexity.COMPLEX, estimated_tokens=llm_router.estimate_tokens(prompt))
-    structured_llm = llm.with_structured_output(ReportSchema, include_raw=True)
-    result = await structured_llm.ainvoke(prompt)
-    parsed: ReportSchema = result["parsed"]
-
-    input_tokens, output_tokens = llm_router.extract_usage(result["raw"])
-    await llm_router.log_cost("generate_candidate_report", model_name, input_tokens, output_tokens)
+    parsed = await llm_router.invoke_structured_with_fallback(
+        TaskComplexity.COMPLEX, "generate_candidate_report", prompt, ReportSchema
+    )
 
     return parsed

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.resume_parser import ResumeParserAgent
 from app.core.database import get_db, get_db_context
+from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate, ParsingStatus
 from app.models.interview import Interview
 from app.models.job import Application
@@ -15,7 +16,7 @@ from app.services import embedding_service, s3_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/resume", tags=["resume"])
+router = APIRouter(prefix="/resume", tags=["resume"], dependencies=[Depends(get_current_recruiter)])
 
 ALLOWED_EXTENSIONS = {"pdf", "docx"}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024

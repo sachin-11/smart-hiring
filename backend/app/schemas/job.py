@@ -62,3 +62,4 @@ class JobListItem(BaseModel):
 
 class JobListResponse(BaseModel):
     jobs: list[JobListItem]
+    total: int

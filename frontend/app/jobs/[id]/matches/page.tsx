@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/lib/api"
 import { extractErrorMessage } from "@/lib/errors"
 import type { JobDetailResponse } from "@/types/job"
@@ -65,7 +67,8 @@ export default function JobMatchesPage() {
   const filteredResults = (results ?? []).filter((r) => r.match_score >= threshold)
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-3xl flex-col gap-6">
       <div>
         <h1 className="text-2xl font-bold">{job?.title ?? "Job Matches"}</h1>
         {job && (
@@ -78,7 +81,8 @@ export default function JobMatchesPage() {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       {!error && results === null && (
-        <div className="flex flex-col items-center gap-2 rounded-xl border p-12 text-center">
+        <div className="flex flex-col items-center gap-3 rounded-xl border p-12 text-center">
+          <Spinner size="lg" />
           <p className="font-medium">Computing matches…</p>
           <p className="text-sm text-muted-foreground">
             Running hybrid search and cross-encoder reranking — this can take up to a minute the
@@ -154,5 +158,6 @@ export default function JobMatchesPage() {
         </>
       )}
     </main>
+    </DashboardShell>
   )
 }

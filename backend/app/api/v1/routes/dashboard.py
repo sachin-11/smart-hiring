@@ -3,13 +3,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate
 from app.models.interview import Interview
 from app.models.job import Application, Job, JobStatus
 from app.models.report import Report
 from app.schemas.dashboard import ActivityItem, DashboardActivityResponse, DashboardStats
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_recruiter)])
 
 
 @router.get("/stats", response_model=DashboardStats)

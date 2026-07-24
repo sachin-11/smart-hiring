@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { useJobStore } from "@/lib/store/job"
 import type { CandidateListResponse, CandidateStatus } from "@/types/candidate"
@@ -132,7 +133,20 @@ export default function CandidatesPage() {
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
-              <p className="p-6 text-sm text-muted-foreground">Loading…</p>
+              <div className="flex flex-col gap-4 p-4">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-4">
+                    <Skeleton className="size-4 shrink-0" />
+                    <div className="flex flex-1 flex-col gap-1.5">
+                      <Skeleton className="h-4 w-40" />
+                      <Skeleton className="h-3 w-56" />
+                    </div>
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-4 w-16" />
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                  </div>
+                ))}
+              </div>
             ) : candidates.length === 0 ? (
               <p className="p-6 text-sm text-muted-foreground">No candidates match these filters.</p>
             ) : (

@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react"
 import { AlertTriangle, Play, RefreshCw } from "lucide-react"
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
+import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
+import { LoadingState } from "@/components/ui/spinner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { api } from "@/lib/api"
 import { extractErrorMessage } from "@/lib/errors"
-import type { AnalyticsDashboardResponse, DriftRunResponse, RagasRunResponse } from "@/types/analytics"
+import type { AnalyticsDashboardResponse, DriftRunResponse, JudgeRunResponse, RagasRunResponse } from "@/types/analytics"
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
@@ -33,6 +35,7 @@ export default function AnalyticsPage() {
 
   const [runningRagas, setRunningRagas] = useState(false)
   const [runningDrift, setRunningDrift] = useState(false)
+  const [runningJudge, setRunningJudge] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [lastAction, setLastAction] = useState<string | null>(null)
 
@@ -87,19 +90,42 @@ export default function AnalyticsPage() {
     }
   }
 
+  const runJudge = async () => {
+    setRunningJudge(true)
+    setActionError(null)
+    setLastAction(null)
+    try {
+      const { data } = await api.post<JudgeRunResponse>("/mlops/judge/run", null, {
+        params: { sample_size: 5 },
+        timeout: 300_000,
+      })
+      setLastAction(
+        `LLM-judge run complete: ${(data.agreement_rate * 100).toFixed(0)}% agreement with the live scorer, ${data.sample_size} samples${data.alert_triggered ? " — ALERT" : ""}`
+      )
+    } catch (err) {
+      setActionError(extractErrorMessage(err, "LLM-judge run failed."))
+    } finally {
+      setRunningJudge(false)
+    }
+  }
+
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-5xl items-center justify-center p-8">
-        <p className="text-destructive">{error}</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-5xl items-center justify-center">
+          <p className="text-destructive">{error}</p>
+        </main>
+      </DashboardShell>
     )
   }
 
   if (!data) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-5xl items-center justify-center p-8">
-        <p className="text-muted-foreground">Loading analytics…</p>
-      </main>
+      <DashboardShell>
+        <main className="mx-auto flex max-w-5xl items-center justify-center">
+          <LoadingState label="Loading analytics…" />
+        </main>
+      </DashboardShell>
     )
   }
 
@@ -121,7 +147,8 @@ export default function AnalyticsPage() {
   ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 p-8">
+    <DashboardShell>
+    <main className="mx-auto flex max-w-5xl flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-bold">MLOps Analytics</h1>
         <div className="flex gap-2">
@@ -130,6 +157,9 @@ export default function AnalyticsPage() {
           </Button>
           <Button variant="outline" onClick={runRagas} disabled={runningRagas} className="gap-1.5">
             <Play className="size-4" /> {runningRagas ? "Running…" : "Run RAGAS Eval"}
+          </Button>
+          <Button variant="outline" onClick={runJudge} disabled={runningJudge} className="gap-1.5">
+            <Play className="size-4" /> {runningJudge ? "Running…" : "Run LLM Judge"}
           </Button>
           <Button variant="ghost" size="icon" onClick={load} aria-label="Refresh">
             <RefreshCw className="size-4" />
@@ -205,5 +235,6 @@ export default function AnalyticsPage() {
         </CardContent>
       </Card>
     </main>
+    </DashboardShell>
   )
 }

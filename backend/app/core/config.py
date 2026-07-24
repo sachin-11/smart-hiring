@@ -43,6 +43,26 @@ class Settings(BaseSettings):
     # via mlflow.search_runs(), which the analytics dashboard needs).
     MLFLOW_TRACKING_URI: str = "sqlite:///mlflow.db"
 
+    # Scheduled RAGAS + drift checks (replaces manual "Run" buttons on /analytics
+    # with a recurring background job that also pushes Slack alerts on threshold
+    # breach). Disabled by default in dev so local runs don't burn LLM tokens on
+    # every backend restart.
+    MLOPS_SCHEDULE_ENABLED: bool = False
+    MLOPS_SCHEDULE_INTERVAL_HOURS: int = 24
+    MLOPS_SCHEDULE_RAGAS_SAMPLE_SIZE: int = 5
+
+    # Interview WS voice loop: how long to wait with no detected speech before
+    # nudging the candidate, and before giving up entirely.
+    INTERVIEW_WS_NUDGE_SECONDS: int = 20
+    INTERVIEW_WS_TIMEOUT_SECONDS: int = 45
+    INTERVIEW_WS_POLL_SECONDS: int = 5
+
+    # Rate limiting (per client IP, backed by Redis so it's shared across workers).
+    RATE_LIMIT_LOGIN: str = "5/minute"
+    RATE_LIMIT_REGISTER: str = "5/hour"
+    RATE_LIMIT_FORGOT_PASSWORD: str = "3/hour"
+    RATE_LIMIT_LLM_ENDPOINTS: str = "10/minute"
+
     # Auth
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
@@ -54,6 +74,9 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000"
+
+    # Used to build links in outbound emails (e.g. the password reset link).
+    FRONTEND_URL: str = "http://localhost:3000"
 
     @property
     def cors_origins_list(self) -> list[str]:

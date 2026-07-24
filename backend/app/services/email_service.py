@@ -54,6 +54,24 @@ async def send_report_share_email(
         raise
 
 
+async def send_password_reset_email(to_email: str, reset_url: str) -> None:
+    _require_configured()
+
+    subject = "Reset your Smart Hiring password"
+    html_content = (
+        f"<p>We received a request to reset your Smart Hiring password.</p>"
+        f'<p><a href="{reset_url}">Click here to choose a new password</a></p>'
+        f"<p style='color:#64748b;font-size:12px'>This link expires in 1 hour. "
+        "If you didn't request this, you can safely ignore this email.</p>"
+    )
+
+    try:
+        await asyncio.to_thread(_send_sync, to_email, subject, html_content)
+    except Exception:
+        logger.exception("Failed to send password reset email to %s", to_email)
+        raise
+
+
 async def send_shortlist_email(to_email: str, candidate_name: str | None, job_title: str | None, message: str | None) -> None:
     _require_configured()
 

@@ -8,6 +8,7 @@ import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { useJobStore } from "@/lib/store/job"
 import { cn } from "@/lib/utils"
@@ -41,7 +42,25 @@ export default function JobsPage() {
         </div>
 
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-2">
+                    <Skeleton className="h-5 w-32" />
+                    <Skeleton className="h-5 w-14 rounded-full" />
+                  </div>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  <Skeleton className="h-4 w-24" />
+                  <div className="flex items-center justify-between">
+                    <Skeleton className="h-4 w-20" />
+                    <Skeleton className="h-4 w-16" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         ) : jobs.length === 0 ? (
           <p className="text-sm text-muted-foreground">No jobs posted yet.</p>
         ) : (

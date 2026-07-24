@@ -4,10 +4,10 @@ from io import BytesIO
 import fitz  # PyMuPDF
 from docx import Document
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
-from app.core.config import settings
 from app.schemas.resume import ResumeData
+from app.services import guardrails, llm_router
+from app.services.llm_router import TaskComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +29,9 @@ _EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
 
 
 class ResumeParserAgent:
-    """Extracts structured candidate data from PDF/DOCX resumes using an LLM."""
-
-    def __init__(self, model: str = "gpt-4o") -> None:
-        llm = ChatOpenAI(model=model, temperature=0, api_key=settings.OPENAI_API_KEY)
-        self._chain = _EXTRACTION_PROMPT | llm.with_structured_output(ResumeData)
+    """Extracts structured candidate data from PDF/DOCX resumes using an LLM,
+    routed through llm_router for cost-aware model choice, cost logging, and
+    automatic cross-provider fallback if the primary provider fails."""
 
     @staticmethod
     def extract_text(file_bytes: bytes, filename: str) -> str:
@@ -74,5 +72,14 @@ class ResumeParserAgent:
             raise ValueError("No extractable text found in resume")
 
         prepared_text = self._prepare_for_extraction(raw_text)
-        result: ResumeData = await self._chain.ainvoke({"resume_text": prepared_text})
+        guardrails.guard_input(prepared_text, context="resume_parsing")
+        # Isolates the resume text as data-to-extract-from rather than instructions —
+        # doesn't hide anything from the extractor, since the fields it needs
+        # (name/email/phone/etc.) are still fully present inside the wrapper.
+        messages = _EXTRACTION_PROMPT.format_messages(
+            resume_text=guardrails.wrap_untrusted(prepared_text, "resume_text")
+        )
+        result: ResumeData = await llm_router.invoke_structured_with_fallback(
+            TaskComplexity.COMPLEX, "parse_resume", messages, ResumeData
+        )
         return raw_text, result

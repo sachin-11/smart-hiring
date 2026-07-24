@@ -5,6 +5,7 @@ import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useAuthStore } from "@/lib/store/auth"
 import type { HiringState, PipelineEvent, StepStatus } from "@/types/pipeline"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"
@@ -78,9 +79,13 @@ export default function PipelineProgress({ candidateId, jobId }: PipelineProgres
     setError(null)
 
     try {
+      const token = useAuthStore.getState().accessToken
       const response = await fetch(`${API_BASE_URL}/pipeline/run`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ candidate_id: candidateId, job_id: jobId }),
       })
       if (!response.ok || !response.body) {

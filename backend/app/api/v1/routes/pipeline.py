@@ -2,10 +2,13 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.agents.orchestrator import get_compiled_graph, initial_state
+from app.core.config import settings
+from app.core.deps import get_current_recruiter
+from app.core.rate_limit import limiter
 from app.schemas.pipeline import PipelineRunRequest
 from app.services import llm_router
 from app.services.mlops import experiment_tracker
@@ -13,7 +16,7 @@ from app.services.monitoring import hiring_pipeline_duration_seconds
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/pipeline", tags=["pipeline"])
+router = APIRouter(prefix="/pipeline", tags=["pipeline"], dependencies=[Depends(get_current_recruiter)])
 
 
 def _sse_event(payload: dict) -> str:
@@ -21,7 +24,8 @@ def _sse_event(payload: dict) -> str:
 
 
 @router.post("/run")
-async def run_pipeline(payload: PipelineRunRequest) -> StreamingResponse:
+@limiter.limit(settings.RATE_LIMIT_LLM_ENDPOINTS)
+async def run_pipeline(request: Request, payload: PipelineRunRequest) -> StreamingResponse:
     async def event_stream():
         started_at = time.time()
         graph = get_compiled_graph()

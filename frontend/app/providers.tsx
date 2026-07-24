@@ -7,12 +7,17 @@ import { SessionProvider, useSession } from "next-auth/react"
 import { useAuthStore } from "@/lib/store/auth"
 
 function AuthSync() {
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const setAuth = useAuthStore((s) => s.setAuth)
 
   useEffect(() => {
+    // On a hard reload, useSession() starts in "loading" (re-fetching
+    // /api/auth/session) with session still undefined — don't clobber the
+    // token that lib/store/auth.ts already persisted from before the reload
+    // with a premature null. Only write once NextAuth has a definitive answer.
+    if (status === "loading") return
     setAuth(session?.accessToken ?? null, session?.user?.email ?? null)
-  }, [session, setAuth])
+  }, [session, status, setAuth])
 
   return null
 }
