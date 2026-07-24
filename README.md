@@ -78,6 +78,7 @@ flowchart LR
 | 6 | [Feedback Report + PDF Scorecard](MODULE_6_SETUP.md) | Few-shot calibrated GPT-4o report, PDF generation, donut/radar chart UI |
 | 7 | [MLOps + RAG Evaluation](MODULE_7_SETUP.md) | RAGAS eval, PSI drift detection, MLflow tracking, Prometheus, Redis caching |
 | 8 | [Recruiter Dashboard + Auth](MODULE_8_SETUP.md) | JWT auth, notifications, dashboard/candidates/jobs UI, deployment configs |
+| 9 | [Production Hardening + Voice AI Overhaul](MODULE_9_SETUP.md) | Full auth lockdown, rate limiting, forgot-password, LLM fallback, guardrails, LLM-as-judge eval, SQL-level pagination, voice interview hardening (reconnect/barge-in/streaming TTS/AudioWorklet), audio-reactive avatar, real interview-style intro flow, full UI redesign |
 
 Each doc explains what was built, *why* specific design decisions were made (including real deviations from the original spec and the reasoning behind them), and — importantly — what was actually verified against real services (no mocks) versus what's documented as unverified.
 
