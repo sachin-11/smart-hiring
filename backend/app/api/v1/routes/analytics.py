@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate, CandidateStatus
@@ -73,6 +74,7 @@ async def trigger_judge_run(sample_size: int = 5, db: AsyncSession = Depends(get
 async def get_analytics_dashboard(db: AsyncSession = Depends(get_db)) -> AnalyticsDashboardResponse:
     pipeline_stats = await experiment_tracker.get_pipeline_run_stats()
     total_cost = await llm_router.get_total_cost()
+    daily_cost = await llm_router.get_daily_cost()
 
     hired_count = (
         await db.execute(select(func.count()).select_from(Candidate).where(Candidate.status == CandidateStatus.HIRED))
@@ -120,6 +122,8 @@ async def get_analytics_dashboard(db: AsyncSession = Depends(get_db)) -> Analyti
         total_pipeline_runs=pipeline_stats["count"],
         avg_match_score=pipeline_stats["avg_match_score"],
         total_llm_cost_usd=total_cost,
+        daily_llm_cost_usd=daily_cost,
+        daily_llm_budget_usd=settings.LLM_DAILY_BUDGET_USD,
         cost_per_hire_usd=cost_per_hire,
         hired_count=hired_count,
         ragas_trend=ragas_trend,

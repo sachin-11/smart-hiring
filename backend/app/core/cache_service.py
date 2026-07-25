@@ -12,6 +12,7 @@ JD_EMBEDDING_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 _MATCH_RESULTS_PREFIX = "cache:match_results"
 _JD_EMBEDDING_PREFIX = "cache:jd_embedding"
+_LLM_RESPONSE_PREFIX = "cache:llm_response"
 
 
 async def get_cached_match_results(job_id: uuid.UUID, top_k: int) -> list[dict] | None:
@@ -87,3 +88,27 @@ async def get_or_set_jd_embedding(job_id: uuid.UUID, compute: Any) -> list[float
     embedding = await compute()
     await set_cached_jd_embedding(job_id, embedding)
     return embedding
+
+
+async def get_cached_llm_response(cache_key: str) -> str | None:
+    """Content-addressed LLM response cache (see app.services.llm_router) —
+    `cache_key` is a hash of the task/prompt, so an identical call (e.g. the
+    same resume text re-parsed) is a free Redis read instead of a paid LLM call."""
+    redis = get_redis_client()
+    try:
+        return await redis.get(f"{_LLM_RESPONSE_PREFIX}:{cache_key}")
+    except Exception:
+        logger.warning("LLM-response cache read failed for key=%s", cache_key, exc_info=True)
+        return None
+    finally:
+        await redis.aclose()
+
+
+async def set_cached_llm_response(cache_key: str, value: str, ttl_seconds: int) -> None:
+    redis = get_redis_client()
+    try:
+        await redis.set(f"{_LLM_RESPONSE_PREFIX}:{cache_key}", value, ex=ttl_seconds)
+    except Exception:
+        logger.warning("LLM-response cache write failed for key=%s", cache_key, exc_info=True)
+    finally:
+        await redis.aclose()

@@ -1,21 +1,25 @@
 import logging
+import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_recruiter
 from app.models.candidate import Candidate, CandidateStatus
+from app.models.interview import Interview
 from app.models.job import Application, ApplicationStatus, Job
+from app.models.report import Report
 from app.schemas.candidate import (
     BulkActionResponse,
     BulkEmailRequest,
     BulkShortlistRequest,
+    CandidateDeleteResponse,
     CandidateListItem,
     CandidateListResponse,
 )
-from app.services import notification_queue
+from app.services import notification_queue, s3_service
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +142,50 @@ async def bulk_email(
 
     await notification_queue.drain_queue()
     return BulkActionResponse(affected=affected)
+
+
+@router.delete("/{candidate_id}", response_model=CandidateDeleteResponse)
+async def delete_candidate(
+    candidate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> CandidateDeleteResponse:
+    """Permanently deletes a candidate and all their data (DB rows + S3
+    objects) — for GDPR-style "right to be forgotten" requests. Interview
+    audio, resume files, and report PDFs are removed by S3 key prefix since
+    individual object keys aren't tracked anywhere else. DB rows for
+    applications/interviews/reports cascade-delete automatically via FK
+    ondelete="CASCADE", so we only need to look them up (before the delete)
+    to know which S3 prefixes to clean up."""
+    candidate = await db.get(Candidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    interview_ids = (
+        (await db.execute(select(Interview.id).where(Interview.candidate_id == candidate_id))).scalars().all()
+    )
+    report_ids = (
+        (await db.execute(select(Report.id).where(Report.candidate_id == candidate_id))).scalars().all()
+    )
+
+    s3_objects_deleted = await s3_service.delete_prefix(s3_service.build_resume_prefix(candidate_id))
+    for interview_id in interview_ids:
+        s3_objects_deleted += await s3_service.delete_prefix(s3_service.build_interview_prefix(interview_id))
+    for report_id in report_ids:
+        s3_objects_deleted += await s3_service.delete_prefix(s3_service.build_report_prefix(report_id))
+
+    await db.delete(candidate)
+    await db.commit()
+
+    logger.info(
+        "Deleted candidate %s (interviews=%d, reports=%d, s3_objects=%d)",
+        candidate_id,
+        len(interview_ids),
+        len(report_ids),
+        s3_objects_deleted,
+    )
+    return CandidateDeleteResponse(
+        candidate_id=candidate_id,
+        interviews_deleted=len(interview_ids),
+        reports_deleted=len(report_ids),
+        s3_objects_deleted=s3_objects_deleted,
+    )

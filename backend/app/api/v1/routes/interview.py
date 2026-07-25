@@ -4,19 +4,29 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketState
 
 from app.agents import interview_agent
+from app.core import security
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import get_current_recruiter
+from app.core.deps import (
+    get_current_recruiter,
+    interview_token_matches,
+    recruiter_from_credentials,
+    require_recruiter_or_interview_access,
+)
 from app.core.rate_limit import limiter
 from app.models.interview import Interview
+from app.models.recruiter import Recruiter
 from app.schemas.interview import (
     InterviewAnswerResponse,
+    InterviewDeleteResponse,
     InterviewStartRequest,
     InterviewStartResponse,
+    InterviewStopResponse,
     InterviewTranscriptResponse,
     QAExchange,
 )
@@ -24,7 +34,15 @@ from app.services import s3_service, voice_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/interview", tags=["interview"], dependencies=[Depends(get_current_recruiter)])
+# NOT router-level auth here (unlike every other resource) — interview
+# endpoints are the one place a non-recruiter (the candidate) legitimately
+# needs access, via a magic-link token scoped to their own session_id rather
+# than a recruiter login. Each endpoint below picks the right check for its
+# own shape: /start is recruiter-only (starting an interview for arbitrary
+# candidate_id/job_id isn't something a candidate should be able to do),
+# /answer and /transcript accept either a recruiter OR a matching token.
+router = APIRouter(prefix="/interview", tags=["interview"])
+_bearer_scheme = HTTPBearer(auto_error=False)
 # Registered without the "/interview" prefix so the socket lives at the spec'd
 # /ws/interview/{session_id} path rather than /interview/ws/interview/{session_id}.
 # NOTE: unauthenticated — browsers can't attach an Authorization header to a
@@ -51,14 +69,20 @@ async def _synthesize_and_upload(session_id: uuid.UUID, text: str) -> str | None
 
 @router.post("/start", response_model=InterviewStartResponse)
 @limiter.limit(settings.RATE_LIMIT_LLM_ENDPOINTS)
-async def start_interview(request: Request, payload: InterviewStartRequest) -> InterviewStartResponse:
+async def start_interview(
+    request: Request,
+    payload: InterviewStartRequest,
+    _recruiter: Recruiter = Depends(get_current_recruiter),
+) -> InterviewStartResponse:
     try:
         result = await interview_agent.start_interview(payload.candidate_id, payload.job_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     audio_url = await _synthesize_and_upload(result["session_id"], result["question"])
-    return InterviewStartResponse(**result, audio_url=audio_url)
+    access_token = security.create_interview_access_token(result["session_id"])
+    access_url = f"{settings.FRONTEND_URL}/interview/{result['session_id']}?token={access_token}"
+    return InterviewStartResponse(**result, audio_url=audio_url, access_token=access_token, access_url=access_url)
 
 
 @router.post("/answer", response_model=InterviewAnswerResponse)
@@ -66,7 +90,14 @@ async def submit_answer(
     session_id: uuid.UUID = Form(...),
     answer_text: str | None = Form(default=None),
     audio_file: UploadFile | None = File(default=None),
+    token: str | None = Form(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> InterviewAnswerResponse:
+    recruiter = await recruiter_from_credentials(credentials, db)
+    if recruiter is None and not interview_token_matches(token, session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     if audio_file is not None:
         data = await audio_file.read()
         if not data:
@@ -90,7 +121,11 @@ async def submit_answer(
 
 
 @router.get("/{session_id}/transcript", response_model=InterviewTranscriptResponse)
-async def get_transcript(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> InterviewTranscriptResponse:
+async def get_transcript(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _access: None = Depends(require_recruiter_or_interview_access),
+) -> InterviewTranscriptResponse:
     live = await interview_agent.get_live_transcript(session_id)
     if live is not None:
         return InterviewTranscriptResponse(
@@ -120,6 +155,42 @@ async def get_transcript(session_id: uuid.UUID, db: AsyncSession = Depends(get_d
         exchanges=[QAExchange(**ex) for ex in exchanges_raw],
         average_score=interview.ai_score,
     )
+
+
+@router.post("/{session_id}/stop", response_model=InterviewStopResponse)
+async def stop_interview(
+    session_id: uuid.UUID,
+    _recruiter: Recruiter = Depends(get_current_recruiter),
+) -> InterviewStopResponse:
+    """Recruiter-only: ends an in-progress interview early, keeping whatever
+    was answered so far and marking it CANCELLED instead of COMPLETED."""
+    try:
+        result = await interview_agent.stop_interview(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return InterviewStopResponse(**result)
+
+
+@router.delete("/{session_id}", response_model=InterviewDeleteResponse)
+async def delete_interview(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _recruiter: Recruiter = Depends(get_current_recruiter),
+) -> InterviewDeleteResponse:
+    """Recruiter-only: permanently deletes a single interview record (and its
+    report, via FK cascade) without touching the candidate or the rest of
+    their history. Interview audio is only reachable by S3 key prefix, so
+    it's cleaned up here rather than relying on any DB-side tracking."""
+    interview = await db.get(Interview, session_id)
+    if interview is None:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    s3_objects_deleted = await s3_service.delete_prefix(s3_service.build_interview_prefix(session_id))
+
+    await db.delete(interview)
+    await db.commit()
+
+    return InterviewDeleteResponse(session_id=session_id, s3_objects_deleted=s3_objects_deleted)
 
 
 async def _stream_question_audio(websocket: WebSocket, session_id: uuid.UUID, question: str) -> None:

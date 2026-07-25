@@ -12,15 +12,14 @@ from sqlalchemy import text
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import close_db, engine, init_db
+from app.core.logging_config import configure_logging
 from app.core.rate_limit import limiter
 from app.core.redis_client import check_redis_connection, close_redis_pool
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.services.mlops.scheduler import start_scheduler, stop_scheduler
 from app.services.monitoring import PrometheusMiddleware, get_metrics_response
 
-logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+configure_logging(debug=settings.DEBUG, log_format=settings.LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +54,7 @@ app.add_middleware(
 )
 app.add_middleware(PrometheusMiddleware)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.state.limiter = limiter
 

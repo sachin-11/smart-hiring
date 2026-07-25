@@ -1,14 +1,15 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { useParams } from "next/navigation"
-import { Clock, Keyboard, Mic } from "lucide-react"
+import { Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
+import { Clock, Keyboard, Mic, Square, Trash2 } from "lucide-react"
 
 import AIAvatar from "@/components/AIAvatar"
 import DashboardShell from "@/components/layout/DashboardShell"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { LoadingState } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import VoiceRecorder from "@/components/VoiceRecorder"
@@ -16,6 +17,8 @@ import { api } from "@/lib/api"
 import { extractErrorMessage } from "@/lib/errors"
 import type {
   InterviewAnswerResponse,
+  InterviewDeleteResponse,
+  InterviewStopResponse,
   InterviewTranscriptResponse,
   InterviewWsServerMessage,
   QAExchange,
@@ -42,9 +45,29 @@ function categoryLabel(category: QuestionCategory): string {
   return category.charAt(0).toUpperCase() + category.slice(1)
 }
 
-export default function InterviewRoomPage() {
+/** Recruiters get the full dashboard chrome; a candidate on a magic link
+ * isn't logged in, so DashboardShell (which force-redirects to /login when
+ * unauthenticated) would break their access entirely — they get a plain,
+ * unbranded page instead. Defined at module scope (not inline) so it isn't
+ * recreated — and remounted — on every render. */
+function InterviewPageShell({ isCandidateMode, children }: { isCandidateMode: boolean; children: React.ReactNode }) {
+  if (isCandidateMode) {
+    return <div className="min-h-screen bg-background p-6">{children}</div>
+  }
+  return <DashboardShell>{children}</DashboardShell>
+}
+
+function InterviewRoomContent() {
   const params = useParams<{ sessionId: string }>()
+  const router = useRouter()
   const sessionId = params.sessionId
+  // Present when this interview room is reached via a candidate magic link
+  // (see app/interview/page.tsx) instead of a recruiter session — every API
+  // call below threads it through as a fallback credential, and the whole
+  // page skips DashboardShell (which would otherwise force-redirect an
+  // unauthenticated candidate to /login).
+  const accessToken = useSearchParams().get("token")
+  const isCandidateMode = Boolean(accessToken)
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -55,6 +78,12 @@ export default function InterviewRoomPage() {
   const [totalQuestions, setTotalQuestions] = useState(0)
   const [completed, setCompleted] = useState(false)
   const [averageScore, setAverageScore] = useState<number | null>(null)
+  const [stopped, setStopped] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [postActionError, setPostActionError] = useState<string | null>(null)
+  const [stopDialogOpen, setStopDialogOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
 
   const [mode, setMode] = useState<AnswerMode>("text")
   const [answerText, setAnswerText] = useState("")
@@ -93,7 +122,9 @@ export default function InterviewRoomPage() {
     let cancelled = false
     async function load() {
       try {
-        const { data } = await api.get<InterviewTranscriptResponse>(`/interview/${sessionId}/transcript`)
+        const { data } = await api.get<InterviewTranscriptResponse>(`/interview/${sessionId}/transcript`, {
+          params: accessToken ? { token: accessToken } : undefined,
+        })
         if (cancelled) return
 
         if (data.status === "completed") {
@@ -139,7 +170,7 @@ export default function InterviewRoomPage() {
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+  }, [sessionId, accessToken])
 
   // Per-question timer.
   useEffect(() => {
@@ -271,7 +302,9 @@ export default function InterviewRoomPage() {
       if (result.complete) {
         setCurrentQuestion(null)
         try {
-          const { data } = await api.get<InterviewTranscriptResponse>(`/interview/${sessionId}/transcript`)
+          const { data } = await api.get<InterviewTranscriptResponse>(`/interview/${sessionId}/transcript`, {
+            params: accessToken ? { token: accessToken } : undefined,
+          })
           setAverageScore(data.average_score)
         } finally {
           setCompleted(true)
@@ -287,7 +320,7 @@ export default function InterviewRoomPage() {
       setQuestionIndex(result.question_index)
       setQuestionStartedAt(Date.now())
     },
-    [sessionId]
+    [sessionId, accessToken]
   )
 
   const submitTextAnswer = useCallback(async () => {
@@ -299,6 +332,7 @@ export default function InterviewRoomPage() {
     const formData = new FormData()
     formData.append("session_id", sessionId)
     formData.append("answer_text", answer)
+    if (accessToken) formData.append("token", accessToken)
 
     try {
       const { data } = await api.post<InterviewAnswerResponse>("/interview/answer", formData, {
@@ -312,7 +346,7 @@ export default function InterviewRoomPage() {
     } finally {
       setSubmitting(false)
     }
-  }, [answerText, submitting, sessionId, commitAnswer])
+  }, [answerText, submitting, sessionId, accessToken, commitAnswer])
 
   const handleVoiceTranscript = useCallback((text: string) => {
     lastAnswerTextRef.current = text
@@ -330,28 +364,58 @@ export default function InterviewRoomPage() {
     setSubmitError(message)
   }, [])
 
+  const confirmStopInterview = useCallback(async () => {
+    setStopping(true)
+    setPostActionError(null)
+    try {
+      stopAllAudio()
+      await api.post<InterviewStopResponse>(`/interview/${sessionId}/stop`)
+      setCurrentQuestion(null)
+      setStopped(true)
+      setStopDialogOpen(false)
+    } catch (err) {
+      setPostActionError(extractErrorMessage(err, "Failed to stop the interview."))
+      setStopDialogOpen(false)
+    } finally {
+      setStopping(false)
+    }
+  }, [sessionId, stopAllAudio])
+
+  const confirmDeleteInterview = useCallback(async () => {
+    setDeleting(true)
+    setPostActionError(null)
+    try {
+      await api.delete<InterviewDeleteResponse>(`/interview/${sessionId}`)
+      router.push("/candidates")
+    } catch (err) {
+      setPostActionError(extractErrorMessage(err, "Failed to delete the interview."))
+      setDeleting(false)
+      setDeleteDialogOpen(false)
+    }
+  }, [sessionId, router])
+
   if (loading) {
     return (
-      <DashboardShell>
+      <InterviewPageShell isCandidateMode={isCandidateMode}>
         <main className="mx-auto flex max-w-4xl items-center justify-center">
           <LoadingState label="Loading interview session…" />
         </main>
-      </DashboardShell>
+      </InterviewPageShell>
     )
   }
 
   if (loadError) {
     return (
-      <DashboardShell>
+      <InterviewPageShell isCandidateMode={isCandidateMode}>
         <main className="mx-auto flex max-w-4xl items-center justify-center">
           <p className="text-destructive">{loadError}</p>
         </main>
-      </DashboardShell>
+      </InterviewPageShell>
     )
   }
 
   return (
-    <DashboardShell>
+    <InterviewPageShell isCandidateMode={isCandidateMode}>
     <main className="mx-auto grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
       <audio
         ref={audioRef}
@@ -364,30 +428,44 @@ export default function InterviewRoomPage() {
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">AI Interview</h1>
-          {!completed && totalQuestions > 0 && currentQuestion?.category !== "intro" && (
-            <span className="text-sm text-muted-foreground">
-              Question {Math.min(questionIndex + 1, totalQuestions)} of {totalQuestions}
-            </span>
-          )}
-          {!completed && currentQuestion?.category === "intro" && (
-            <span className="text-sm text-muted-foreground">Getting started…</span>
-          )}
+          <div className="flex items-center gap-3">
+            {!completed && !stopped && totalQuestions > 0 && currentQuestion?.category !== "intro" && (
+              <span className="text-sm text-muted-foreground">
+                Question {Math.min(questionIndex + 1, totalQuestions)} of {totalQuestions}
+              </span>
+            )}
+            {!completed && !stopped && currentQuestion?.category === "intro" && (
+              <span className="text-sm text-muted-foreground">Getting started…</span>
+            )}
+            {!isCandidateMode && !completed && !stopped && currentQuestion && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setStopDialogOpen(true)}
+                className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Square className="size-3.5" /> Stop Interview
+              </Button>
+            )}
+          </div>
         </div>
 
-        {!completed && (
+        {!completed && !stopped && (
           <div className="flex justify-center py-2">
             <AIAvatar analyser={playbackAnalyser} speaking={aiSpeaking} />
           </div>
         )}
 
-        {completed ? (
+        {completed || stopped ? (
           <Card>
             <CardHeader>
-              <CardTitle>Interview complete</CardTitle>
+              <CardTitle>{completed ? "Interview complete" : "Interview stopped"}</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2">
+            <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-muted-foreground">
-                All {totalQuestions} questions answered.
+                {completed
+                  ? `All ${totalQuestions} questions answered.`
+                  : "This interview was ended early. Answers given so far have been saved."}
               </p>
               {averageScore !== null && (
                 <p>
@@ -397,6 +475,17 @@ export default function InterviewRoomPage() {
                   </span>
                 </p>
               )}
+              {!isCandidateMode && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteDialogOpen(true)}
+                  className="gap-1.5 self-start text-destructive hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Trash2 className="size-4" /> Delete Interview
+                </Button>
+              )}
+              {postActionError && <p className="text-sm text-destructive">{postActionError}</p>}
             </CardContent>
           </Card>
         ) : (
@@ -508,6 +597,34 @@ export default function InterviewRoomPage() {
         </div>
       </div>
     </main>
-    </DashboardShell>
+
+    <ConfirmDialog
+      open={stopDialogOpen}
+      onOpenChange={setStopDialogOpen}
+      title="End this interview now?"
+      description="The candidate's answers so far will be saved, but no further questions will be asked."
+      confirmLabel="Stop Interview"
+      loadingLabel="Stopping…"
+      loading={stopping}
+      onConfirm={confirmStopInterview}
+    />
+    <ConfirmDialog
+      open={deleteDialogOpen}
+      onOpenChange={setDeleteDialogOpen}
+      title="Delete this interview record?"
+      description="This permanently removes the transcript, score, and audio for this interview. This cannot be undone."
+      confirmLabel="Delete Interview"
+      loading={deleting}
+      onConfirm={confirmDeleteInterview}
+    />
+    </InterviewPageShell>
+  )
+}
+
+export default function InterviewRoomPage() {
+  return (
+    <Suspense fallback={<LoadingState label="Loading interview session…" />}>
+      <InterviewRoomContent />
+    </Suspense>
   )
 }

@@ -63,3 +63,11 @@ class JobListItem(BaseModel):
 class JobListResponse(BaseModel):
     jobs: list[JobListItem]
     total: int
+
+
+class JobDeleteResponse(BaseModel):
+    job_id: uuid.UUID
+    applications_deleted: int
+    interviews_deleted: int
+    reports_deleted: int
+    s3_objects_deleted: int

@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
+    # "json" for a real deploy (log aggregator-friendly structured lines);
+    # anything else (the default) stays human-readable for a local terminal.
+    LOG_FORMAT: str = "text"
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/smart_hiring"
@@ -63,11 +66,20 @@ class Settings(BaseSettings):
     RATE_LIMIT_FORGOT_PASSWORD: str = "3/hour"
     RATE_LIMIT_LLM_ENDPOINTS: str = "10/minute"
 
+    # Hard daily cap on LLM spend (see app.services.llm_router) — 0 disables it.
+    # Once the day's spend (UTC) hits this, new LLM calls are refused with
+    # LLMBudgetExceededError instead of silently running up the bill further.
+    LLM_DAILY_BUDGET_USD: float = 0
+
     # Auth
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_TTL_MINUTES: int = 30
     JWT_REFRESH_TOKEN_TTL_DAYS: int = 7
+    # Candidate magic-link interview access — long enough to cover a recruiter
+    # sending the link ahead of a scheduled slot, short enough to not be a
+    # standing credential.
+    INTERVIEW_ACCESS_TOKEN_TTL_HOURS: int = 6
 
     # Notifications
     SLACK_WEBHOOK_URL: str = ""

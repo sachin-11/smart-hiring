@@ -42,3 +42,11 @@ export interface JobListResponse {
   jobs: JobListItem[]
   total: number
 }
+
+export interface JobDeleteResponse {
+  job_id: string
+  applications_deleted: number
+  interviews_deleted: number
+  reports_deleted: number
+  s3_objects_deleted: number
+}

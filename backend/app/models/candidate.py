@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, JSON, DateTime, Float, String, Text
+from sqlalchemy import ARRAY, JSON, DateTime, Float, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -32,6 +32,18 @@ class ParsingStatus(str, enum.Enum):
 
 class Candidate(Base):
     __tablename__ = "candidates"
+    __table_args__ = (
+        # Approximate nearest-neighbor index for cosine similarity search
+        # (matching_service.py's .cosine_distance() calls) — without this,
+        # every hybrid-search query does a full sequential scan over embeddings.
+        Index(
+            "ix_candidates_resume_embedding_ivfflat",
+            "resume_embedding",
+            postgresql_using="ivfflat",
+            postgresql_with={"lists": "100"},
+            postgresql_ops={"resume_embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

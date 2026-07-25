@@ -111,3 +111,43 @@ def generate_presigned_url(key: str, expires_in: int = 3600) -> str:
         Params={"Bucket": settings.AWS_S3_BUCKET, "Key": key},
         ExpiresIn=expires_in,
     )
+
+
+def _delete_prefix_sync(prefix: str) -> int:
+    """Lists then batch-deletes every object under `prefix` (paginated —
+    S3 caps both list and delete-batch responses at 1000 keys). Used for
+    candidate data deletion, where a single candidate can own an unbounded
+    number of interview-audio objects (one clip per question, per session)
+    that were never tracked individually — only the prefix they all share."""
+    deleted = 0
+    paginator = _s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings.AWS_S3_BUCKET, Prefix=prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if not keys:
+            continue
+        _s3_client.delete_objects(Bucket=settings.AWS_S3_BUCKET, Delete={"Objects": keys})
+        deleted += len(keys)
+    return deleted
+
+
+async def delete_prefix(prefix: str) -> int:
+    """Returns the number of objects deleted. Best-effort — a candidate
+    deletion request shouldn't hard-fail because S3 hiccuped; the caller logs
+    and moves on rather than leaving the DB row un-deletable."""
+    try:
+        return await asyncio.to_thread(_delete_prefix_sync, prefix)
+    except ClientError:
+        logger.exception("Failed to delete S3 objects under prefix=%s", prefix)
+        return 0
+
+
+def build_resume_prefix(candidate_id: uuid.UUID) -> str:
+    return f"resumes/{candidate_id}/"
+
+
+def build_interview_prefix(session_id: uuid.UUID) -> str:
+    return f"interviews/{session_id}/"
+
+
+def build_report_prefix(report_id: uuid.UUID) -> str:
+    return f"reports/{report_id}/"

@@ -60,6 +60,8 @@ class AnalyticsDashboardResponse(BaseModel):
     total_pipeline_runs: int
     avg_match_score: float | None
     total_llm_cost_usd: float
+    daily_llm_cost_usd: float
+    daily_llm_budget_usd: float
     cost_per_hire_usd: float | None
     hired_count: int
     ragas_trend: list[RagasTrendPoint]

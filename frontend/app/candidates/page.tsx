@@ -2,18 +2,20 @@
 
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Mail, Star } from "lucide-react"
+import { Mail, Star, Trash2 } from "lucide-react"
 
 import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { extractErrorMessage } from "@/lib/errors"
 import { useJobStore } from "@/lib/store/job"
-import type { CandidateListResponse, CandidateStatus } from "@/types/candidate"
+import type { CandidateDeleteResponse, CandidateListResponse, CandidateStatus } from "@/types/candidate"
 
 const STATUS_OPTIONS: CandidateStatus[] = ["new", "screening", "interviewing", "offered", "hired", "rejected"]
 
@@ -67,6 +69,32 @@ export default function CandidatesPage() {
     onError: (err) => setActionMessage(err instanceof Error ? err.message : "Failed to send emails."),
   })
 
+  const [deleteTarget, setDeleteTarget] = useState<string[] | null>(null)
+
+  const deleteMutation = useMutation({
+    mutationFn: async (candidateIds: string[]) => {
+      const results = await Promise.all(
+        candidateIds.map((id) => api.delete<CandidateDeleteResponse>(`/candidates/${id}`))
+      )
+      return results.length
+    },
+    onSuccess: (count) => {
+      setActionMessage(`Deleted ${count} candidate(s).`)
+      setSelected(new Set())
+      setDeleteTarget(null)
+      queryClient.invalidateQueries({ queryKey: ["candidates"] })
+    },
+    onError: (err) => {
+      setActionMessage(extractErrorMessage(err, "Failed to delete candidate(s)."))
+      setDeleteTarget(null)
+    },
+  })
+
+  const handleDelete = (candidateIds: string[]) => {
+    setActionMessage(null)
+    setDeleteTarget(candidateIds)
+  }
+
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -91,6 +119,14 @@ export default function CandidatesPage() {
               </Button>
               <Button size="sm" variant="outline" className="gap-1.5" onClick={() => emailMutation.mutate(Array.from(selected))}>
                 <Mail className="size-4" /> Send Email
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => handleDelete(Array.from(selected))}
+              >
+                <Trash2 className="size-4" /> Delete
               </Button>
             </div>
           )}
@@ -158,6 +194,7 @@ export default function CandidatesPage() {
                     <th className="p-3 font-medium">Applied JD</th>
                     <th className="p-3 font-medium">Match Score</th>
                     <th className="p-3 font-medium">Status</th>
+                    <th className="w-10 p-3"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -177,6 +214,16 @@ export default function CandidatesPage() {
                       <td className="p-3">
                         <Badge variant="secondary">{c.status}</Badge>
                       </td>
+                      <td className="p-3">
+                        <button
+                          type="button"
+                          aria-label={`Delete ${c.full_name ?? "candidate"}`}
+                          onClick={() => handleDelete([c.id])}
+                          className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -185,6 +232,15 @@ export default function CandidatesPage() {
           </CardContent>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title={deleteTarget && deleteTarget.length === 1 ? "Delete this candidate?" : `Delete ${deleteTarget?.length ?? 0} candidates?`}
+        description="This also removes their interviews and reports. This cannot be undone."
+        loading={deleteMutation.isPending}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+      />
     </DashboardShell>
   )
 }

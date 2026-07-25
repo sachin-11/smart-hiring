@@ -8,6 +8,8 @@ export interface InterviewStartResponse {
   question_index: number
   total_questions: number
   audio_url: string | null
+  access_token: string
+  access_url: string
 }
 
 export interface InterviewAnswerResponse {
@@ -41,6 +43,17 @@ export interface InterviewTranscriptResponse {
   question_index: number
   total_questions: number
   average_score: number | null
+}
+
+export interface InterviewStopResponse {
+  session_id: string
+  status: InterviewStatus
+  questions_answered: number
+}
+
+export interface InterviewDeleteResponse {
+  session_id: string
+  s3_objects_deleted: number
 }
 
 /** Messages the /ws/interview/{sessionId} socket sends to the client. */

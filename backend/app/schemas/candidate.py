@@ -35,3 +35,10 @@ class BulkEmailRequest(BaseModel):
 
 class BulkActionResponse(BaseModel):
     affected: int
+
+
+class CandidateDeleteResponse(BaseModel):
+    candidate_id: uuid.UUID
+    interviews_deleted: int
+    reports_deleted: int
+    s3_objects_deleted: int

@@ -54,6 +54,8 @@ export interface AnalyticsDashboardResponse {
   total_pipeline_runs: number
   avg_match_score: number | null
   total_llm_cost_usd: number
+  daily_llm_cost_usd: number
+  daily_llm_budget_usd: number
   cost_per_hire_usd: number | null
   hired_count: number
   ragas_trend: RagasTrendPoint[]

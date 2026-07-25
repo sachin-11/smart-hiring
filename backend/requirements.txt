@@ -43,3 +43,5 @@ httpx==0.28.1
 # which is the modern equivalent the aioredis project itself recommends migrating to.
 apscheduler==3.11.3
 slowapi==0.1.10
+pytest==8.4.2
+pytest-asyncio==0.25.2

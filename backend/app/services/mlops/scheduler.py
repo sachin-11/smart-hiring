@@ -1,15 +1,52 @@
 import logging
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import settings
 from app.core.database import get_db_context
+from app.core.redis_client import get_redis_client
 from app.services import slack_service
 from app.services.mlops import drift_detector, llm_judge_evaluator, ragas_evaluator
 
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
+
+# Every horizontally-scaled replica runs its own APScheduler instance (there's
+# no shared job store), so without this lock N replicas would each run — and
+# Slack-alert — the same scheduled check N times. A short-lived Redis lock
+# (SET NX + TTL) ensures only whichever replica's tick wins the race actually
+# runs it; the rest see the lock held and skip that tick.
+_LOCK_KEY = "mlops:scheduler:leader_lock"
+_LOCK_TTL_SECONDS = 20 * 60  # comfortably longer than a full ragas+drift+judge run
+_RELEASE_IF_OWNER_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+
+
+async def _try_acquire_leader_lock() -> str | None:
+    redis = get_redis_client()
+    token = uuid.uuid4().hex
+    try:
+        acquired = await redis.set(_LOCK_KEY, token, nx=True, ex=_LOCK_TTL_SECONDS)
+        return token if acquired else None
+    except Exception:
+        logger.warning("Failed to acquire MLOps scheduler leader lock (Redis unavailable?)", exc_info=True)
+        return None
+    finally:
+        await redis.aclose()
+
+
+async def _release_leader_lock(token: str) -> None:
+    """Atomically deletes the lock only if we still hold it (token matches) —
+    otherwise a run that outlasts the TTL could release a lock a DIFFERENT
+    replica has since legitimately acquired."""
+    redis = get_redis_client()
+    try:
+        await redis.eval(_RELEASE_IF_OWNER_SCRIPT, 1, _LOCK_KEY, token)
+    except Exception:
+        logger.warning("Failed to release MLOps scheduler leader lock", exc_info=True)
+    finally:
+        await redis.aclose()
 
 
 async def _alert_slack(text: str) -> None:
@@ -25,7 +62,19 @@ async def run_scheduled_mlops_checks() -> None:
     """Runs the same RAGAS eval + drift check the /analytics page's "Run" buttons
     trigger manually, on a recurring schedule, and pushes a Slack alert for any
     threshold breach. One failing check must not block the other."""
-    logger.info("Running scheduled MLOps checks")
+    lock_token = await _try_acquire_leader_lock()
+    if lock_token is None:
+        logger.info("MLOps scheduled checks: another replica holds the leader lock, skipping this tick")
+        return
+
+    try:
+        await _run_mlops_checks_locked()
+    finally:
+        await _release_leader_lock(lock_token)
+
+
+async def _run_mlops_checks_locked() -> None:
+    logger.info("Running scheduled MLOps checks (leader lock held)")
 
     async with get_db_context() as db:
         try:

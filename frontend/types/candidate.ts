@@ -23,3 +23,10 @@ export interface CandidateListFilters {
   min_score?: number
   max_score?: number
 }
+
+export interface CandidateDeleteResponse {
+  candidate_id: string
+  interviews_deleted: number
+  reports_deleted: number
+  s3_objects_deleted: number
+}

@@ -51,6 +51,10 @@ class InterviewStartResponse(BaseModel):
     question_index: int
     total_questions: int
     audio_url: str | None = None
+    # Magic-link credentials so the recruiter can send the candidate a link to
+    # take this interview themselves, without a recruiter account.
+    access_token: str
+    access_url: str
 
 
 class InterviewAnswerRequest(BaseModel):
@@ -69,6 +73,17 @@ class InterviewAnswerResponse(BaseModel):
     question_index: int
     total_questions: int
     audio_url: str | None = None
+
+
+class InterviewStopResponse(BaseModel):
+    session_id: uuid.UUID
+    status: InterviewStatus
+    questions_answered: int
+
+
+class InterviewDeleteResponse(BaseModel):
+    session_id: uuid.UUID
+    s3_objects_deleted: int
 
 
 class InterviewTranscriptResponse(BaseModel):

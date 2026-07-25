@@ -1,18 +1,21 @@
 "use client"
 
 import Link from "next/link"
-import { useQuery } from "@tanstack/react-query"
-import { Plus, Users } from "lucide-react"
+import { useState, type MouseEvent } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Plus, Trash2, Users } from "lucide-react"
 
 import DashboardShell from "@/components/layout/DashboardShell"
 import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { extractErrorMessage } from "@/lib/errors"
 import { useJobStore } from "@/lib/store/job"
 import { cn } from "@/lib/utils"
-import type { JobListResponse, JobStatus } from "@/types/job"
+import type { JobDeleteResponse, JobListResponse, JobStatus } from "@/types/job"
 
 const STATUS_STYLES: Record<JobStatus, string> = {
   draft: "bg-muted text-muted-foreground",
@@ -23,11 +26,35 @@ const STATUS_STYLES: Record<JobStatus, string> = {
 
 export default function JobsPage() {
   const setCurrentJob = useJobStore((s) => s.setCurrentJob)
+  const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
     queryKey: ["jobs"],
     queryFn: async () => (await api.get<JobListResponse>("/jobs")).data,
   })
+
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null)
+  const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null)
+
+  const deleteMutation = useMutation({
+    mutationFn: async (jobId: string) => (await api.delete<JobDeleteResponse>(`/jobs/${jobId}`)).data,
+    onSuccess: () => {
+      setMessage({ kind: "success", text: `Deleted "${deleteTarget?.title}".` })
+      setDeleteTarget(null)
+      queryClient.invalidateQueries({ queryKey: ["jobs"] })
+    },
+    onError: (err) => {
+      setMessage({ kind: "error", text: extractErrorMessage(err, "Failed to delete job.") })
+      setDeleteTarget(null)
+    },
+  })
+
+  const handleDelete = (e: MouseEvent, jobId: string, title: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setMessage(null)
+    setDeleteTarget({ id: jobId, title })
+  }
 
   const jobs = data?.jobs ?? []
 
@@ -40,6 +67,11 @@ export default function JobsPage() {
             <Plus className="size-4" /> Create JD
           </Link>
         </div>
+        {message && (
+          <p className={`text-sm ${message.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+            {message.text}
+          </p>
+        )}
 
         {isLoading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -71,9 +103,17 @@ export default function JobsPage() {
                 href={`/jobs/${job.id}/matches`}
                 onClick={() => setCurrentJob(job.id, job.title)}
               >
-                <Card className="h-full transition-colors hover:border-primary">
+                <Card className="group relative h-full transition-colors hover:border-primary">
+                  <button
+                    type="button"
+                    aria-label={`Delete ${job.title}`}
+                    onClick={(e) => handleDelete(e, job.id, job.title)}
+                    className="absolute right-2 top-2 z-10 rounded-md p-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
                   <CardHeader>
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start justify-between gap-2 pr-7">
                       <CardTitle className="text-base">{job.title}</CardTitle>
                       <Badge className={STATUS_STYLES[job.status]} variant="outline">
                         {job.status}
@@ -99,6 +139,15 @@ export default function JobsPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title={`Delete "${deleteTarget?.title ?? ""}"?`}
+        description="This also removes its applications, interviews, and reports. This cannot be undone."
+        loading={deleteMutation.isPending}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+      />
     </DashboardShell>
   )
 }

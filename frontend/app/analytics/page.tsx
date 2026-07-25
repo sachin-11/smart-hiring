@@ -17,12 +17,12 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCard({ label, value, sub, danger }: { label: string; value: string; sub?: string; danger?: boolean }) {
   return (
     <Card>
       <CardContent className="flex flex-col gap-1 p-4">
         <span className="text-sm text-muted-foreground">{label}</span>
-        <span className="text-2xl font-bold">{value}</span>
+        <span className={`text-2xl font-bold ${danger ? "text-destructive" : ""}`}>{value}</span>
         {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
       </CardContent>
     </Card>
@@ -172,13 +172,19 @@ export default function AnalyticsPage() {
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Pipeline Runs" value={String(data.total_pipeline_runs)} />
         <StatCard
           label="Avg Match Score"
           value={data.avg_match_score !== null ? `${data.avg_match_score.toFixed(1)}%` : "—"}
         />
         <StatCard label="Total LLM Cost" value={`$${data.total_llm_cost_usd.toFixed(4)}`} />
+        <StatCard
+          label="Today's LLM Spend"
+          value={`$${data.daily_llm_cost_usd.toFixed(4)}`}
+          sub={data.daily_llm_budget_usd > 0 ? `of $${data.daily_llm_budget_usd.toFixed(2)} daily cap` : "no daily cap set"}
+          danger={data.daily_llm_budget_usd > 0 && data.daily_llm_cost_usd >= data.daily_llm_budget_usd}
+        />
         <StatCard
           label="Cost per Hire"
           value={data.cost_per_hire_usd !== null ? `$${data.cost_per_hire_usd.toFixed(2)}` : "—"}

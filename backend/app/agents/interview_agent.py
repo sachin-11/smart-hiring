@@ -380,6 +380,34 @@ async def submit_answer(session_id: uuid.UUID, answer_text: str) -> dict:
     return result
 
 
+async def stop_interview(session_id: uuid.UUID) -> dict:
+    """Recruiter-initiated early termination of an in-progress interview
+    (candidate no-show, technical issue, recruiter cutting it short, etc).
+    Persists whatever was answered so far — same shape as a natural
+    completion — but marks the interview CANCELLED so it stays distinguishable
+    from one the candidate actually finished."""
+    state = await _load_session(session_id)
+    if state is None:
+        raise ValueError("Interview session not found, already ended, or expired")
+
+    scored = [ex["score"] for ex in state["history"] if ex.get("score") is not None]
+    average_score = sum(scored) / len(scored) if scored else None
+    transcript_lines = [f"Q ({ex['category']}): {ex['question']}\nA: {ex['answer']}" for ex in state["history"]]
+
+    async with get_db_context() as db:
+        interview = await db.get(Interview, session_id)
+        if interview is None:
+            raise ValueError("Interview record not found")
+        interview.status = InterviewStatus.CANCELLED
+        interview.transcript = "\n\n".join(transcript_lines)
+        interview.ai_score = average_score
+        interview.ai_feedback = {"exchanges": state["history"]}
+        await db.commit()
+
+    await _delete_session(session_id)
+    return {"session_id": session_id, "status": InterviewStatus.CANCELLED, "questions_answered": len(state["history"])}
+
+
 async def get_live_transcript(session_id: uuid.UUID) -> dict | None:
     """Returns the in-progress transcript from Redis, including the current
     unanswered question. Returns None once the interview is finalized (at

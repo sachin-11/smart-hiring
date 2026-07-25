@@ -1,7 +1,9 @@
 import enum
+import hashlib
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -10,6 +12,7 @@ from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
+from app.core import cache_service
 from app.core.config import settings
 from app.core.redis_client import get_redis_client
 from app.services.monitoring import llm_token_usage_total
@@ -40,6 +43,55 @@ LONG_INPUT_TOKEN_THRESHOLD = 6000
 
 COST_LOG_KEY = "llm_cost:log"
 COST_LOG_MAX_ENTRIES = 200
+
+# Identical prompts (e.g. the same resume text re-parsed, or the same weak
+# answer re-scored) return the cached response instead of paying for another
+# LLM call. 24h matches the JD-embedding cache's TTL in cache_service.py.
+LLM_RESPONSE_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+class LLMBudgetExceededError(RuntimeError):
+    """Raised when today's LLM spend has hit the configured daily cap
+    (settings.LLM_DAILY_BUDGET_USD) — a hard stop against runaway cost from a
+    bug, an abusive client, or an unexpectedly expensive prompt loop."""
+
+
+def _prompt_cache_key(task_name: str, temperature: float, prompt: str | list[Any], schema_name: str = "") -> str:
+    """Deterministic across identical calls regardless of which model ends up
+    serving it (primary or fallback) — the cache is about "we already have an
+    answer for this exact input," not about which provider produced it."""
+    content = prompt if isinstance(prompt, str) else " ".join(str(getattr(m, "content", m)) for m in prompt)
+    raw = f"{task_name}:{temperature}:{schema_name}:{content}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _daily_cost_key() -> str:
+    return f"llm_cost:daily:{datetime.now(timezone.utc):%Y-%m-%d}"
+
+
+async def get_daily_cost() -> float:
+    redis = get_redis_client()
+    try:
+        raw = await redis.get(_daily_cost_key())
+        return float(raw) if raw else 0.0
+    except Exception:
+        logger.warning("Failed to read daily LLM cost from Redis", exc_info=True)
+        return 0.0
+    finally:
+        await redis.aclose()
+
+
+async def _enforce_budget(task_name: str) -> None:
+    """No-op unless LLM_DAILY_BUDGET_USD is set (default 0 = disabled), so
+    this never surprises a dev/staging environment that hasn't opted in."""
+    if settings.LLM_DAILY_BUDGET_USD <= 0:
+        return
+    spent = await get_daily_cost()
+    if spent >= settings.LLM_DAILY_BUDGET_USD:
+        raise LLMBudgetExceededError(
+            f"Daily LLM budget of ${settings.LLM_DAILY_BUDGET_USD:.2f} already spent "
+            f"(${spent:.2f} so far today) — refusing task={task_name} until the daily window resets"
+        )
 
 
 def estimate_tokens(text: str) -> int:
@@ -116,6 +168,9 @@ async def log_cost(task_name: str, model: str, input_tokens: int, output_tokens:
     try:
         await redis.incrbyfloat("llm_cost:total_usd", cost)
         await redis.incrbyfloat(f"llm_cost:by_model:{model}", cost)
+        daily_key = _daily_cost_key()
+        await redis.incrbyfloat(daily_key, cost)
+        await redis.expire(daily_key, 60 * 60 * 48)  # self-cleans; re-set every call, cheap
         await redis.lpush(COST_LOG_KEY, json.dumps(entry))
         await redis.ltrim(COST_LOG_KEY, 0, COST_LOG_MAX_ENTRIES - 1)
     except Exception:
@@ -170,7 +225,19 @@ async def invoke_with_routing(
 
     For structured output use invoke_structured_with_fallback(), which gets
     the same fallback behavior.
+
+    Identical (task_name, temperature, prompt) calls are served from a Redis
+    cache instead of hitting the model again, and once settings.LLM_DAILY_BUDGET_USD
+    is exhausted for the day, new (non-cached) calls raise LLMBudgetExceededError.
     """
+    cache_key = _prompt_cache_key(task_name, temperature, prompt)
+    cached = await cache_service.get_cached_llm_response(cache_key)
+    if cached is not None:
+        logger.debug("LLM cache hit for task=%s", task_name)
+        return cached
+
+    await _enforce_budget(task_name)
+
     estimated = estimate_tokens(prompt)
     primary_model = choose_model(complexity, estimated)
     fallback_model = _fallback_model(primary_model)
@@ -190,7 +257,9 @@ async def invoke_with_routing(
                 logger.warning(
                     "LLM fallback succeeded for task=%s using %s after %s failed", task_name, model_name, primary_model
                 )
-            return str(response.content)
+            result = str(response.content)
+            await cache_service.set_cached_llm_response(cache_key, result, LLM_RESPONSE_CACHE_TTL_SECONDS)
+            return result
         except Exception as exc:
             last_exc = exc
             logger.warning("LLM call failed (task=%s, model=%s): %s", task_name, model_name, exc)
@@ -210,7 +279,17 @@ async def invoke_structured_with_fallback(
     """Structured-output invocation with the same routing, cost logging, and
     cross-provider fallback as invoke_with_routing(). `prompt` may be a plain
     string or a pre-formatted message list (e.g. from a ChatPromptTemplate),
-    for callers that need a system/human role split."""
+    for callers that need a system/human role split.
+
+    Also shares invoke_with_routing()'s response cache and daily budget cap."""
+    cache_key = _prompt_cache_key(task_name, temperature, prompt, schema_name=output_schema.__name__)
+    cached = await cache_service.get_cached_llm_response(cache_key)
+    if cached is not None:
+        logger.debug("LLM cache hit for task=%s", task_name)
+        return output_schema.model_validate_json(cached)
+
+    await _enforce_budget(task_name)
+
     estimate_source = prompt if isinstance(prompt, str) else " ".join(str(getattr(m, "content", m)) for m in prompt)
     estimated = estimate_tokens(estimate_source)
     primary_model = choose_model(complexity, estimated)
@@ -231,6 +310,7 @@ async def invoke_structured_with_fallback(
                 logger.warning(
                     "LLM fallback succeeded for task=%s using %s after %s failed", task_name, model_name, primary_model
                 )
+            await cache_service.set_cached_llm_response(cache_key, parsed.model_dump_json(), LLM_RESPONSE_CACHE_TTL_SECONDS)
             return parsed
         except Exception as exc:
             last_exc = exc
